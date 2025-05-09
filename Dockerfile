@@ -21,20 +21,18 @@ RUN apt-get update \
 RUN curl -sSL https://install.python-poetry.org | python3 - \
     && ln -s /opt/poetry/bin/poetry /usr/local/bin/poetry
 
-# Copy poetry files
+# Copy project files
 COPY pyproject.toml poetry.lock* ./
+COPY src/ ./src/
 
 # Install dependencies
 RUN poetry install --no-dev --no-interaction --no-ansi
-
-# Copy application code
-COPY src/duplicates_service /app/duplicates_service/
 
 # Expose port
 EXPOSE 8080
 
 # Run the application with Gunicorn
-CMD ["gunicorn", "duplicates_service.api.main:app", \
+CMD ["gunicorn", "src.duplicates_service.api.main:app", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--timeout", "120", \
