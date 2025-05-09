@@ -32,7 +32,7 @@ RUN poetry install --no-dev --no-interaction --no-ansi
 EXPOSE 8080
 
 # Run the application with Gunicorn
-CMD ["gunicorn", "src.duplicates_service.api.main:app", \
+CMD ["gunicorn", "src.api.main:app", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--timeout", "120", \
