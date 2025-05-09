@@ -52,9 +52,11 @@ async def process_transaction(request: Request):
         
         # Decode base64 data
         decoded_message = base64.b64decode(data).decode("utf-8").strip()
-        
+
         # Parse JSON message
         json_message = json.loads(decoded_message)
+        print(json_message)
+
         
         # Parse message using Pydantic model
         transaction = TransactionMessage(**json_message)
@@ -130,7 +132,7 @@ async def process_transaction(request: Request):
 #           Duplicates Route                #
 #                                           #
 #############################################
-
+'''
 @router.post("/updates")
 async def process_transaction_update(request: Request):
     """
@@ -221,3 +223,4 @@ async def process_transaction_update(request: Request):
             detail=f"Error processing transaction update: {str(e)}"
         )
 
+'''
