@@ -38,4 +38,5 @@ EXPOSE 8080
 CMD ["gunicorn", "src.duplicates_service.api.main:app", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--timeout", "120", \
      "--bind", "0.0.0.0:8080"] 
