@@ -32,10 +32,10 @@ RUN poetry install --no-dev --no-interaction --no-ansi
 COPY src/ ./src/
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8080
 
 # Run the application with Gunicorn
 CMD ["gunicorn", "src.duplicates_service.api.main:app", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000"] 
+     "--bind", "0.0.0.0:8080"] 
