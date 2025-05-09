@@ -72,7 +72,7 @@ async def process_transaction(request: Request):
         # transaction.bank = "clara"
         # transaction.transaction_date = "2025-04-05"
         # transaction.company_id = "6eb86fe6-dc58-4e4e-ae6e-4d676dcb6c51"
-        if transaction.bank == "bbva":
+        if transaction.bank != "bbva":
             return {"is_duplicate": False}
         
         # Check for duplicates
