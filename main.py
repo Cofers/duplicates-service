@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import router
+from src.api.routes import router
 
 app = FastAPI(
     title="Duplicates Service",
