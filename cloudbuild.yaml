@@ -9,22 +9,17 @@ steps:
   - submit
   - --tag=${_REGISTRY_PATH}/${_IMAGE_NAME}
 
-  # Deploy to Cloud Run
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: gcloud
-    args:
-      - 'run'
-      - 'deploy'
-      - 'duplicates-service'
-      - '--image'
-      - 'gcr.io/$PROJECT_ID/duplicates-service:$COMMIT_SHA'
-      - '--region'
-      - 'us-central1'
-      - '--platform'
-      - 'managed'
-      - '--allow-unauthenticated'
-
-images:
-  - 'gcr.io/$PROJECT_ID/duplicates-service:$COMMIT_SHA'
-
-timeout: '1800s' 
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  args: 
+  - gcloud
+  - run
+  - deploy
+  - ${_IMAGE_NAME}
+  - --allow-unauthenticated
+  - --cpu=2
+  - --memory=2Gi
+  - --concurrency=2
+  - --max-instances=1
+  - --image=${_REGISTRY_PATH}/${_IMAGE_NAME}
+  - --region=${_REGION}
+  - --set-env-vars=REDIS_DB=${_REDIS_DB},REDIS_HOST=${_REDIS_HOST},REDIS_PORT=${_REDIS_PORT},BIGQUERY_DATASET=${_BIGQUERY_DATASET},BIGQUERY_TABLE=${_BIGQUERY_TABLE}
