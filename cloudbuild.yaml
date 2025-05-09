@@ -1,0 +1,30 @@
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  args:
+  - gcloud
+  - builds
+  - submit
+  - --tag=${_REGISTRY_PATH}/${_IMAGE_NAME}
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'duplicates-service'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/duplicates-service:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/duplicates-service:$COMMIT_SHA'
+
+timeout: '1800s' 
