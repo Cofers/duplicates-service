@@ -5,8 +5,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Set environment variables
-ENV PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     POETRY_VERSION=1.7.1 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_CREATE=false
@@ -29,13 +28,13 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry install --no-dev --no-interaction --no-ansi
 
 # Copy application code
-COPY src/ /app/src/
+COPY src/duplicates_service /app/duplicates_service/
 
 # Expose port
 EXPOSE 8080
 
 # Run the application with Gunicorn
-CMD ["gunicorn", "src.duplicates_service.api.main:app", \
+CMD ["gunicorn", "duplicates_service.api.main:app", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--timeout", "120", \

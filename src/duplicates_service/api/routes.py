@@ -2,11 +2,11 @@ import base64
 import json
 import time
 from fastapi import APIRouter, HTTPException, Request
-from ..models.transaction_message import TransactionMessage
-from ..lib.duplicate_detector import DuplicateDetector
-from ..lib.similarity import TransactionUpdateDetector
-from ..lib.llm_client import LLMClient
-from ..lib.pubsub import publish_response
+from duplicates_service.models.transaction_message import TransactionMessage
+from duplicates_service.lib.duplicate_detector import DuplicateDetector
+from duplicates_service.lib.similarity import TransactionUpdateDetector
+from duplicates_service.lib.llm_client import LLMClient
+from duplicates_service.lib.pubsub import publish_response
 
 
 router = APIRouter()
