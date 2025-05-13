@@ -47,6 +47,7 @@ async def process_transaction(request: Request):
         transaction = json.loads(decoded_message)
         
         # Test data for transaction
+        '''
         transaction = {
             "checksum": "peneismaello24",
             "concept": "PAGO NOM",
@@ -59,7 +60,7 @@ async def process_transaction(request: Request):
                 "origin": "plugin"                
             }
         }
-        
+        '''
         # Generate checksum
         checksum = mosaic.generate_checksum(transaction)    
         
