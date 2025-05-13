@@ -2,7 +2,7 @@ import base64
 import json
 import time
 from fastapi import APIRouter, HTTPException, Request
-from mosaic import Mosaic
+from src.mosaic import Mosaic
 from src.llm_client import LLMClient
 from src.pubsub import publish_response
 
