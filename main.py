@@ -1,5 +1,22 @@
+import sys
+import os
+
+# Add the application root directory to the sys.path
+# This is necessary when running from a different directory or with tools
+# like gunicorn that might change the working directory or not fully respect PYTHONPATH
+# The expected root in this Docker container is /app, which is the directory containing main.py and the 'src' folder
+app_root = os.path.abspath(os.path.dirname(__file__))
+if app_root not in sys.path:
+    sys.path.insert(0, app_root)
+# You could also directly use:
+# if '/app' not in sys.path:
+#    sys.path.insert(0, '/app')
+# but the os.path version is generally more flexible.
+
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+# Esta importación de src.api.routes ahora debería encontrar el módulo src
 from src.api.routes import router
 
 app = FastAPI(
@@ -25,4 +42,4 @@ async def root():
     """
     Root endpoint to check if the service is running.
     """
-    return {"status": "ok", "message": "Duplicates Service is running"} 
+    return {"status": "ok", "message": "Duplicates Service is running"}
