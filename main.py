@@ -17,7 +17,7 @@ if app_root not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 # Esta importación de src.api.routes ahora debería encontrar el módulo src
-from src.api.routes import router
+from .src.api.routes import router
 
 app = FastAPI(
     title="Duplicates Service",

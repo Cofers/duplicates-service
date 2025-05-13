@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-from src.api.duplicates_routes import router as duplicates_router
-from src.api.updates_routes import router as updates_router
+from .duplicates_routes import router as duplicates_router
+from .updates_routes import router as updates_router
 
 # Create main router
 router = APIRouter()
