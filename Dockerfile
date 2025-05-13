@@ -33,5 +33,8 @@ EXPOSE 8080
 ENV SHM_DIR=/tmp/shm
 RUN mkdir -p ${SHM_DIR} && mkdir -p /.local
 
+# Set PYTHONPATH to include the current directory
+ENV PYTHONPATH=/app
+
 # Run the application
 ENTRYPOINT ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "gunicorn.conf.py", "main:app"] 
