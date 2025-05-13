@@ -1,6 +1,13 @@
-from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field
+
+
+class MetadataItem(BaseModel):
+    """
+    Metadata item model.
+    """
+    key: str = Field(..., description="Metadata key")
+    value: str = Field(..., description="Metadata value")
 
 
 class CategoryInference(BaseModel):
@@ -37,6 +44,12 @@ class TransactionMessage(BaseModel):
     user_id: str = Field(..., description="User identifier")
     company_id: str = Field(..., description="Company identifier")
     transaction_date: str = Field(..., description="Transaction date")
-    reported_remaining: int = Field(..., description="Reported remaining balance")
-    metadata: Dict[str, str] = Field(default_factory=dict, description="Additional metadata")
-    enrichments: Optional[Enrichments] = Field(default=None, description="Transaction enrichments") 
+    reported_remaining: int = Field(
+        ..., description="Reported remaining balance"
+    )
+    metadata: Any = Field(
+        default_factory=dict, description="Additional metadata"
+    )
+    enrichments: Optional[Enrichments] = Field(
+        default=None, description="Transaction enrichments"
+    ) 

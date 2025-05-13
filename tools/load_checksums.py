@@ -4,14 +4,16 @@ import logging
 import sys
 import os
 import argparse
-from google.cloud import bigquery
-from .checksum_loader import ChecksumLoader
+from tools.src.checksum_loader import ChecksumLoader
 
 
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s [%(module)s.%(funcName)s:%(lineno)d] %(message)s",
+    format=(
+        "[%(asctime)s] %(levelname)s "
+        "[%(module)s.%(funcName)s:%(lineno)d] %(message)s"
+    ),
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
@@ -24,7 +26,8 @@ async def generate_checksums_for_company(
     redis_db: int
 ) -> None:
     """
-    Generate and store checksums in Redis for all accounts of a specific company.
+    Generate and store checksums in Redis for all accounts of a specific 
+    company.
     
     Args:
         company_id: Company ID to generate checksums for
@@ -40,67 +43,19 @@ async def generate_checksums_for_company(
     # Initialize loader
     loader = ChecksumLoader()
     
-    # Initialize BigQuery client
-    bq_client = bigquery.Client()
+    # Load checksums for company
+    result = await loader.load_company_checksums(company_id)
     
-    # Query to get all company accounts
-    query = f"""
-    SELECT DISTINCT
-        bank,
-        account_number
-    FROM `{os.environ.get("BIGQUERY_DATASET")}.{os.environ.get("BIGQUERY_TABLE")}`
-    WHERE company_id = @company_id
-    """
-    
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter(
-                "company_id", "STRING", company_id
-            ),
-        ]
-    )
-    
-    logger.info(f"Querying BigQuery for company_id: {company_id}")
-    query_job = bq_client.query(query, job_config=job_config)
-    accounts = [dict(row) for row in query_job]
-    
-    if not accounts:
-        logger.info(f"No accounts found for {company_id}")
-        return
-    
-    # Process each account
-    total_processed = 0
-    total_new_checksums = 0
-    
-    for account in accounts:
-        try:
-            success, new_checksums = await loader.generate_and_store_checksums(
-                company_id,
-                account["bank"],
-                account["account_number"]
-            )
-            
-            if success:
-                total_new_checksums += new_checksums
-            total_processed += 1
-            
-            # Log every 100 accounts
-            if total_processed % 100 == 0:
-                logger.info(
-                    f"Processed {total_processed} accounts, "
-                    f"{total_new_checksums} new checksums"
-                )
-                
-        except Exception as e:
-            logger.error(
-                f"Error processing account {account['bank']}:"
-                f"{account['account_number']}: {str(e)}"
-            )
-    
-    logger.info(
-        f"Finished processing {total_processed} accounts for "
-        f"company_id: {company_id}, {total_new_checksums} new checksums"
-    )
+    if result["success"]:
+        logger.info(
+            f"Successfully processed {result['total_accounts']} accounts, "
+            f"generated {result['total_new_checksums']} new checksums"
+        )
+    else:
+        logger.error(
+            f"Error loading checksums: {result.get('error', 'Unknown error')}"
+        )
+        sys.exit(1)
 
 
 async def main():
