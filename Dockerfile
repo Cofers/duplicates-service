@@ -37,4 +37,4 @@ RUN mkdir -p ${SHM_DIR} && mkdir -p /.local
 ENV PYTHONPATH=/app
 
 # Run the application
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "gunicorn.conf.py", "main:app"] 
+CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "gunicorn.conf.py", "main:app"] 

@@ -1,5 +1,8 @@
 import sys
 import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from src.api.routes import router
 
 # Add the application root directory to the sys.path
 # This is necessary when running from a different directory or with tools
@@ -12,12 +15,6 @@ if app_root not in sys.path:
 # if '/app' not in sys.path:
 #    sys.path.insert(0, '/app')
 # but the os.path version is generally more flexible.
-
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-# Esta importación de src.api.routes ahora debería encontrar el módulo src
-from .src.api.routes import router
 
 app = FastAPI(
     title="Duplicates Service",
