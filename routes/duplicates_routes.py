@@ -2,9 +2,9 @@ import base64
 import json
 import time
 from fastapi import APIRouter, HTTPException, Request
-from src.lib.mosaic import Mosaic
-from src.lib.llm_client import LLMClient
-from src.lib.pubsub import publish_response
+from mosaic import Mosaic
+from src.llm_client import LLMClient
+from src.pubsub import publish_response
 
 
 router = APIRouter()
