@@ -1,7 +1,7 @@
 import base64
 import json
 from fastapi import APIRouter, HTTPException, Request
-from src.models.transaction_message import TransactionMessage
+#from src.models.transaction_message import TransactionMessage
 from src.lib.similarity import TransactionUpdateDetector
 from src.lib.llm_client import LLMClient
 

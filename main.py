@@ -1,8 +1,8 @@
 import sys
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from src.api.routes import router
+from src.api.duplicates_routes import router as duplicates_router
 
 # Add the application root directory to the sys.path
 # This is necessary when running from a different directory or with tools
@@ -31,8 +31,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routes
-app.include_router(router)
+# Include duplicates router directly in the app
+app.include_router(
+    duplicates_router,
+    tags=["duplicates"]
+)
+
 
 @app.get("/")
 async def root():
