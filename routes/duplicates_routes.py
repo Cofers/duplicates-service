@@ -61,6 +61,7 @@ async def process_transaction(request: Request):
             }
         }
         '''
+        
         # Generate checksum
         checksum = mosaic.generate_checksum(transaction)    
         
@@ -73,6 +74,7 @@ async def process_transaction(request: Request):
         )
         
         if exists:
+            print("Checksum exists")
             # Get original checksum
             original_checksum = await mosaic.get_original_checksum(
                 checksum,
@@ -81,7 +83,21 @@ async def process_transaction(request: Request):
                 transaction["account_number"]
             )
             
+            # Prepare data for Pub/Sub
+            pubsub_data = {
+                "company_id": transaction["company_id"],
+                "account_number": transaction["account_number"],
+                "checksum_new": transaction.get("checksum", ""),
+                "checksum_old": original_checksum,
+                "bank": transaction["bank"],
+                "date": time.strftime("%Y-%m-%d")
+            }
+            
+            # Publish to Pub/Sub
+            publish_response(pubsub_data, "duplicate-transactions")
+            
             # Prepare message for LLM
+            '''
             message = (
                 "Analyze these transaction checksums for potential "
                 f"duplicates: {transaction.get('checksum', '')} and "
@@ -92,8 +108,6 @@ async def process_transaction(request: Request):
                 "Determine if this is a transaction update or "
                 "different transactions."
             )
-            print("Message:")
-            print(message)
             
             llm_result = await duplicates_llm_client.analyze_message(
                 message=message,
@@ -115,6 +129,8 @@ async def process_transaction(request: Request):
             
             # Publish to Pub/Sub
             publish_response(pubsub_data, "llm-transactions")
+            '''
+            
             success = await mosaic.add_checksum(
                 checksum,
                 transaction.get("checksum", ""),
@@ -126,8 +142,8 @@ async def process_transaction(request: Request):
             return {
                 "is_duplicate": True,
                 "checksum": transaction.get("checksum", ""),
-                "conflicting_checksum": original_checksum,
-                "llm_analysis": llm_result
+                "conflicting_checksum": original_checksum
+                #"llm_analysis": llm_result
             }
         
         # If doesn't exist, add it
