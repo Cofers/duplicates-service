@@ -18,7 +18,7 @@ steps:
   - --allow-unauthenticated
   - --cpu=2
   - --memory=2Gi
-  - --concurrency=80
+  - --concurrency=20
   - --max-instances=2
   - --image=${_REGISTRY_PATH}/${_IMAGE_NAME}
   - --region=${_REGION}
