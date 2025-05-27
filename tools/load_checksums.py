@@ -48,14 +48,59 @@ async def generate_checksums_for_company(
     
     if result["success"]:
         logger.info(
-            f"Successfully processed {result['total_accounts']} accounts, "
-            f"generated {result['total_new_checksums']} new checksums"
+            f"Proceso completado para la empresa {company_id}. "
+            f"Cuentas procesadas: {result['total_accounts']}. "
+            f"Operaciones de checksums exactos: {result.get('total_exact_checksum_ops', 'N/A')}. "
+            f"Operaciones de patrones de concepto: {result.get('total_pattern_ops', 'N/A')}."
         )
     else:
         logger.error(
-            f"Error loading checksums: {result.get('error', 'Unknown error')}"
+            f"Error cargando datos para la empresa {company_id}: "
+            f"{result.get('error', 'Error desconocido')}"
         )
+        sys.exit(1)  # Salir con error
+
+
+async def generate_checksums_for_all_companies(
+    redis_host: str,
+    redis_port: int,
+    redis_db: int
+) -> None:
+    """
+    Generate and store checksums in Redis for all companies.
+    
+    Args:
+        redis_host: Redis host
+        redis_port: Redis port
+        redis_db: Redis database number
+    """
+    # Set Redis environment variables
+    os.environ["REDIS_HOST"] = redis_host
+    os.environ["REDIS_PORT"] = str(redis_port)
+    os.environ["REDIS_DB"] = str(redis_db)
+    
+    # Initialize loader
+    loader = ChecksumLoader()
+    
+    # Get all companies
+    companies = await loader.get_all_companies()
+    
+    if not companies:
+        logger.error("No se encontraron empresas para procesar")
         sys.exit(1)
+    
+    logger.info(f"Iniciando procesamiento de {len(companies)} empresas")
+    
+    for company_id in companies:
+        logger.info(f"Procesando empresa: {company_id}")
+        await generate_checksums_for_company(
+            company_id,
+            redis_host,
+            redis_port,
+            redis_db
+        )
+    
+    logger.info("Procesamiento de todas las empresas completado")
 
 
 async def main():
@@ -64,8 +109,12 @@ async def main():
     )
     parser.add_argument(
         "--company-id",
-        required=True,
-        help="Company ID"
+        help="Company ID (no requerido si se usa --all-companies)"
+    )
+    parser.add_argument(
+        "--all-companies",
+        action="store_true",
+        help="Procesar todas las empresas"
     )
     parser.add_argument(
         "--redis-host",
@@ -87,13 +136,23 @@ async def main():
     
     args = parser.parse_args()
     
+    if not args.company_id and not args.all_companies:
+        parser.error("Se debe especificar --company-id o --all-companies")
+    
     try:
-        await generate_checksums_for_company(
-            args.company_id,
-            args.redis_host,
-            args.redis_port,
-            args.redis_db
-        )
+        if args.all_companies:
+            await generate_checksums_for_all_companies(
+                args.redis_host,
+                args.redis_port,
+                args.redis_db
+            )
+        else:
+            await generate_checksums_for_company(
+                args.company_id,
+                args.redis_host,
+                args.redis_port,
+                args.redis_db
+            )
     except Exception as e:
         logger.error(f"Error loading checksums: {str(e)}")
         sys.exit(1)

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     PUBSUB_TOPIC: str = "nose"
     PUBSUB_SUBSCRIPTION: str = "duplicates-detector"
 
+    # Duplicates Configuration
+    DUPLICATE_EXACT_TTL: int = 1296000  # 15 días en segundos
+    DUPLICATE_PATTERN_TTL: int = 31536000  # 1 año en segundos
+    PATTERN_MONTHS_LOOKBACK: list[int] = [1, 2, 3, 4, 5, 6]  # Meses a revisar para patrones
+
     class Config:
         env_file = ".env"
         case_sensitive = True

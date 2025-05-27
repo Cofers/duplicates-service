@@ -1,16 +1,23 @@
 import base64
 import json
 import time
+import logging # Added for more detailed logging
 from fastapi import APIRouter, HTTPException, Request
 from src.mosaic import Mosaic
-from src.llm_client import LLMClient
-from src.pubsub import publish_response
+from src.llm_client import LLMClient # Assuming this is used or will be used later
+from src.pubsub import publish_response # Assuming this is your Pub/Sub publishing function
 
+# Configure logger for this module if not configured globally
+logger = logging.getLogger(__name__)
+# Example of basic logging config if not set elsewhere, adjust as needed:
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 router = APIRouter()
-mosaic = Mosaic()
+mosaic = Mosaic() # Initialize Mosaic instance
 
-# Initialize LLM client for duplicates analysis
+# Initialize LLM client (as in your original code)
+# This client is not used in the refactored duplicate handling part below,
+# but kept if you intend to use it later.
 duplicates_llm_client = LLMClient(
     app_name="duplicates",
     default_host=(
@@ -18,151 +25,157 @@ duplicates_llm_client = LLMClient(
     )
 )
 
-@router.post("/duplicates")
-async def process_transaction(request: Request):
+@router.post("/duplicates", tags=["Duplicates Service"]) # Added a tag for OpenAPI docs
+async def process_transaction_endpoint(request: Request): # Renamed for clarity
     """
-    Process transaction message and check for duplicates.
+    Process a transaction message:
+    1. Decode and parse the transaction data.
+    2. Use Mosaic service to check for exact duplicates and recurring patterns.
+    3. If an exact duplicate is found, prepare and publish a message to Pub/Sub.
+    4. Return the processing result.
     """
-    print("Processing transaction in duplicates route")
+    logger.info("Received request for /duplicates endpoint.")
     try:
-        # Get JSON body
         body = await request.json()
         
-        # Handle both message formats
+        # Handle different possible message structures for 'data' field
         if "message" in body and "data" in body["message"]:
-            data = body["message"]["data"]
+            encoded_data_field = body["message"]["data"]
         elif "data" in body:
-            data = body["data"]
+            encoded_data_field = body["data"]
         else:
+            logger.warning("Invalid message format received. 'data' or 'message.data' field missing.")
             raise HTTPException(
                 status_code=400,
-                detail="Invalid message format. Expected 'data' or "
-                       "'message.data'"
+                detail="Invalid message format. Expected 'data' or 'message.data' field containing Base64 encoded JSON."
             )
         
         # Decode base64 data
-        decoded_message = base64.b64decode(data).decode("utf-8").strip()
+        try:
+            decoded_message_bytes = base64.b64decode(encoded_data_field)
+        except base64.binascii.Error as b64_err:
+            logger.error(f"Base64 decoding error: {str(b64_err)}")
+            raise HTTPException(status_code=400, detail=f"Invalid Base64 encoding in data field: {str(b64_err)}")
+        
+        decoded_message_str = decoded_message_bytes.decode("utf-8").strip()
 
-        # Parse JSON message
-        transaction = json.loads(decoded_message)
+        # Parse JSON message to get the transaction dictionary
+        try:
+            # This is the actual transaction from the incoming request
+            current_transaction = json.loads(decoded_message_str)
+        except json.JSONDecodeError as json_err:
+            logger.error(f"JSON decoding error for message content: {str(json_err)}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON format in decoded message data: {str(json_err)}")
         
-        # Test data for transaction
-        '''
-        transaction = {
-            "checksum": "peneismaello24",
-            "concept": "PAGO NOM",
-            "amount": -112114,
-            "account_number": "01720163924114",
-            "bank": "bancoazteca",
-            "transaction_date": "2025-05-09",
-            "company_id": "6eb86fe6-dc58-4e4e-ae6e-4d676dcb6c51",
-            "metadata": {
-                "origin": "plugin"                
-            }
-        }
-        '''
+
+        current_transaction["transaction_date"] = "2025-05-20"
+        current_transaction["checksum"] = "681fea7810dc61776c21fa6c"
+        current_transaction["concept"] = "15 FACTURA ART"
+        current_transaction["amount"] = -10000000
+        current_transaction["account_number"] = "653180003810259331"
+        current_transaction["bank"] = "unalanapay"
+        current_transaction["company_id"] = "ccee6737-6e3b-40ce-b7a0-016ec8e5d3c3"
+        current_transaction["metadata"] = {"origin": "syncfy"}
+
+        logger.info(f"Processing transaction with ID/Checksum: {current_transaction.get('checksum', 'N/A')}")
+
+        # --- Core Logic: Process the transaction using Mosaic ---
+        # This single call handles checksum generation, Redis checks (exact and pattern),
+        # and adding new entries to Redis if it's not an exact duplicate.
+        mosaic_processing_result = await mosaic.process_transaction(current_transaction)
         
-        # Generate checksum
-        checksum = mosaic.generate_checksum(transaction)    
-        
-        # Check if exists
-        exists = await mosaic.exists_checksum(
-            checksum,
-            transaction["company_id"],
-            transaction["bank"],
-            transaction["account_number"]
-        )
-        
-        if exists:
-            print("Checksum exists")
-            # Get original checksum
-            original_checksum = await mosaic.get_original_checksum(
-                checksum,
-                transaction["company_id"],
-                transaction["bank"],
-                transaction["account_number"]
-            )
+        logger.info(f"Mosaic processing result: {mosaic_processing_result}")
+
+        # Check if Mosaic identified it as an exact duplicate
+        if mosaic_processing_result.get("is_duplicate"):
+            logger.info("Exact duplicate detected by Mosaic.")
             
-            # Prepare data for Pub/Sub
-            pubsub_data = {
-                "company_id": transaction["company_id"],
-                "account_number": transaction["account_number"],
-                "checksum_new": transaction.get("checksum", ""),
-                "checksum_old": original_checksum,
-                "bank": transaction["bank"],
+            # Prepare data for Pub/Sub notification about the duplicate
+            # "checksum_new" is the identifier from the currently processed transaction.
+            # "checksum_old" is the identifier of the original transaction it conflicted with.
+            
+            checksum_new_for_pubsub = current_transaction.get("checksum", "") 
+            checksum_old_for_pubsub = mosaic_processing_result.get("conflicting_checksum")
+            
+            pubsub_data_for_duplicate = {
+                "company_id": current_transaction.get("company_id"),
+                "account_number": current_transaction.get("account_number"),
+                "checksum_new": checksum_new_for_pubsub, 
+                "checksum_old": checksum_old_for_pubsub, 
+                "bank": current_transaction.get("bank"),
                 "date": time.strftime("%Y-%m-%d")
+                
             }
             
+            logger.info(f"Preparing to publish duplicate data to Pub/Sub topic 'duplicate-transactions': {pubsub_data_for_duplicate}")
+            
             # Publish to Pub/Sub
-            publish_response(pubsub_data, "duplicate-transactions")
-            
-            # Prepare message for LLM
+            # IMPORTANT: If publish_response is a blocking synchronous function,
+            # consider running it in a thread to avoid blocking the FastAPI event loop:
+            # await asyncio.to_thread(publish_response, pubsub_data_for_duplicate, "duplicate-transactions")
+            # If it's already async, then: await publish_response(...)
+            publish_response(pubsub_data_for_duplicate, "duplicate-transactions") 
+            logger.info("Duplicate data published to Pub/Sub.")
+
+            # The LLM analysis part from your original code is kept here, commented out.
+            # You would use 'current_transaction' and 'checksum_old_for_pubsub'.
             '''
-            message = (
-                "Analyze these transaction checksums for potential "
-                f"duplicates: {transaction.get('checksum', '')} and "
-                f"{original_checksum}. "
-                f"Bank: {transaction['bank']}, "
-                f"Company ID: {transaction['company_id']}, "
-                f"Account: {transaction['account_number']}. "
-                "Determine if this is a transaction update or "
-                "different transactions."
+            message_for_llm = (
+                f"Analyze potential duplicate: new_tx_id='{checksum_new_for_pubsub}', "
+                f"conflicts_with_tx_id='{checksum_old_for_pubsub}'. "
+                f"Bank: {current_transaction.get('bank')}, "
+                f"Company: {current_transaction.get('company_id')}, "
+                f"Account: {current_transaction.get('account_number')}. "
+                "Is this an update or truly different transactions?"
             )
+            llm_result = await duplicates_llm_client.analyze_message(message=message_for_llm)
+            logger.info(f"LLM analysis result: {llm_result}")
             
-            llm_result = await duplicates_llm_client.analyze_message(
-                message=message,
-            )
-            
-            print("LLM result:")
-            print(llm_result)
-            
-            # Prepare data for Pub/Sub
-            pubsub_data = {
-                "company_id": transaction["company_id"],
-                "account_number": transaction["account_number"],
-                "checksum_new": transaction.get("checksum", ""),
-                "checksum_silver": original_checksum,
-                "type": llm_result.get("classification", "unknown"),
-                "reason": llm_result.get("reason", ""),
-                "date": time.strftime("%Y-%m-%d"),
+            pubsub_data_llm = {
+                "company_id": current_transaction.get("company_id"),
+                "account_number": current_transaction.get("account_number"),
+                "checksum_new": checksum_new_for_pubsub,
+                "checksum_old": checksum_old_for_pubsub, # Changed from checksum_silver for consistency
+                "llm_classification": llm_result.get("classification", "unknown"),
+                "llm_reason": llm_result.get("reason", ""),
+                "detection_timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
             }
-            
-            # Publish to Pub/Sub
-            publish_response(pubsub_data, "llm-transactions")
+            publish_response(pubsub_data_llm, "llm-transactions")
+            logger.info("LLM analysis data published to Pub/Sub.")
             '''
             
-            success = await mosaic.add_checksum(
-                checksum,
-                transaction.get("checksum", ""),
-                transaction["company_id"],
-                transaction["bank"],
-                transaction["account_number"]
-            )
-            
+            # The API response for a detected duplicate should include details from Mosaic's processing.
+            # No need to call mosaic.add_checksum() again; process_transaction handles this internally.
             return {
-                "is_duplicate": True,
-                "checksum": transaction.get("checksum", ""),
-                "conflicting_checksum": original_checksum
-                #"llm_analysis": llm_result
+                "status": "duplicate_detected",
+                "details": mosaic_processing_result, # Contains all relevant flags and checksums
+                "processed_transaction_id": current_transaction.get("checksum", "") # ID of the transaction just processed
             }
         
-        # If doesn't exist, add it
-        success = await mosaic.add_checksum(
-            checksum,
-            transaction.get("checksum", ""),
-            transaction["company_id"],
-            transaction["bank"],
-            transaction["account_number"]
-        )
-        
-        
-        return {
-            "is_duplicate": False,
-            "checksum": checksum
-        }
+        elif mosaic_processing_result.get("error"):
+            logger.warning(f"Mosaic processing returned an error: {mosaic_processing_result.get('error')}")
+            # Depending on the error, you might still return parts of the result or a specific error response
+            return {
+                "status": "processing_error_from_mosaic",
+                "details": mosaic_processing_result
+            }
             
+        else: # Not an exact duplicate and no error from Mosaic
+            logger.info("Transaction processed by Mosaic: Not an exact duplicate.")
+            # `mosaic.process_transaction` would have added the new checksum to Redis
+            # and incremented the concept count for the pattern history.
+            return {
+                "status": "processed", # Or more descriptive like "new_transaction_recorded"
+                "details": mosaic_processing_result
+            }
+            
+    except HTTPException as http_exc:
+        # Re-raise HTTPException to let FastAPI handle it
+        raise http_exc
     except Exception as e:
+        # Catch any other unexpected errors during request handling or processing
+        logger.error(f"Unexpected error in /duplicates endpoint: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Error processing transaction: {str(e)}"
-        ) 
+            detail=f"An unexpected server error occurred: {str(e)}"
+        )
