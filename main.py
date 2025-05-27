@@ -38,8 +38,9 @@ async def lifespan(app: FastAPI):
     app.state.update_detector = None
     
     # --- Conexión a Redis ---
-    # Idealmente, REDIS_URL vendría de variables de entorno o un archivo de configuración
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/2") 
+    # Construimos la URL de Redis usando REDIS_HOST y la base de datos 2
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    redis_url = f"redis://{redis_host}:6379/2"
     logger.info(f"Intentando conectar a Redis en: {redis_url}")
     
     try:
