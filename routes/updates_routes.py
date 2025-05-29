@@ -114,6 +114,7 @@ async def process_transaction_update(request: Request):
         print(updated_transactions)
         # If there are updates, send to Pub/Sub
         if updated_transactions:
+            llm_results = []
             for update in updated_transactions:
                 # First send to simility-transactions
                 pubsub_data = {
@@ -142,12 +143,21 @@ async def process_transaction_update(request: Request):
                     f"bank: {transaction_dict['bank']}, "
                     f"company_id: {transaction_dict['company_id']}"
                 )
+                #message_for_llm = "checksum_new: b39d283eddabee9635bef4686816dc11be63bfe8, checksum_old: f426d93f71288a6b35cc7bd8d3d0ebe40579808b, account_number: 69565360201, bank: bajio, company_id: 11ea7663-07a9-439c-9026-9c5ab2f9f85f"
                 
                 try:
                     llm_result = await updates_llm_client.analyze_message(
                         message=message_for_llm
                     )
                     logger.info("LLM analysis result: %s", llm_result)
+                    
+                    # Store LLM result for response
+                    llm_results.append({
+                        "original_checksum": update["original_checksum"],
+                        "new_checksum": update["new_checksum"],
+                        "classification": llm_result["classification"],
+                        "reason": llm_result["reason"]
+                    })
                     
                     # Send LLM result to llm-simility-responses
                     llm_pubsub_data = {
@@ -172,7 +182,8 @@ async def process_transaction_update(request: Request):
 
         return {
             "processed_checksum": transaction_dict.get("checksum", "N/A"),
-            "updates": updated_transactions
+            "updates": updated_transactions,
+            "llm_analysis": llm_results
         }
 
     except json.JSONDecodeError as e:

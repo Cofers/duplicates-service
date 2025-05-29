@@ -2,20 +2,19 @@ import os
 import httpx
 import json
 import uuid
-from typing import Dict, Any
-
+from typing import Dict, Any, Optional
 
 class LLMClient:
     """
     Generic client for interacting with LLM APIs.
-    Handles session management and message processing.
+    Can handle new user/session per request or a persistent session.
     """
     def __init__(
         self,
         app_name: str,
         default_host: str,
-        session_id: str = None,
-        user_id: str = "u_123",
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         timeout: float = 60.0
     ):
         """
@@ -24,110 +23,143 @@ class LLMClient:
         Args:
             app_name: Name of the LLM application
             default_host: Default host URL for the LLM API
-            session_id: Session identifier (if None, a new UUID will be generated)
-            user_id: User identifier
+            user_id: Optional default user identifier for the instance
+            session_id: Optional default session identifier for the instance
             timeout: Request timeout in seconds
         """
         self.app_name = app_name
         self.default_host = default_host
-        # Prioriza LLM_API_HOST del entorno, si no, usa default_host
         self.llm_api_host = os.getenv("LLM_API_HOST", self.default_host)
         self.client = httpx.AsyncClient(timeout=timeout)
-        self.session_id = session_id or f"s_{uuid.uuid4()}"
+        
         self.user_id = user_id
-        self.session_created = False
+        self.session_id = session_id
+        self.instance_session_created = False
 
-    async def ensure_session(self, initial_state: Dict[str, Any] = None) -> None:
+    async def ensure_session(
+        self,
+        initial_state: Optional[Dict[str, Any]] = None,
+        user_id_to_ensure: Optional[str] = None,
+        session_id_to_ensure: Optional[str] = None
+    ) -> None:
         """
-        Ensures LLM session exists, creates it if it doesn't.
+        Ensures an LLM session exists, creates it if it doesn't.
+        Uses provided IDs or falls back to instance's default IDs.
 
         Args:
-            initial_state: Initial state for the session
+            initial_state: Initial state for the session.
+            user_id_to_ensure: Specific user ID for this session.
+            session_id_to_ensure: Specific session ID for this session.
         """
-        if not self.session_created:
-            session_url = (
-                f"{self.llm_api_host}/apps/{self.app_name}/users/"
-                f"{self.user_id}/sessions/{self.session_id}"
+        target_user_id = user_id_to_ensure or self.user_id
+        target_session_id = session_id_to_ensure or self.session_id
+
+        if not target_user_id or not target_session_id:
+            raise ValueError("User ID and Session ID must be specified either at instance level or per call for ensure_session.")
+
+        is_ensuring_instance_session = (target_user_id == self.user_id and
+                                        target_session_id == self.session_id)
+        
+        if is_ensuring_instance_session and self.instance_session_created:
+            print(f"Instance session {target_session_id} already ensured for user {target_user_id}.")
+            return
+
+        session_url = (
+            f"{self.llm_api_host}/apps/{self.app_name}/users/"
+            f"{target_user_id}/sessions/{target_session_id}"
+        )
+        try:
+            session_response = await self.client.post(
+                session_url,
+                json={"state": initial_state or {}}
             )
-            try:
-                session_response = await self.client.post(
-                    session_url,
-                    json={"state": initial_state or {}}
-                )
+            session_response.raise_for_status()
+            
+            if is_ensuring_instance_session:
+                self.instance_session_created = True
+            print(f"Session {target_session_id} ensured for user {target_user_id} in app {self.app_name}.")
 
-                session_response.raise_for_status() # Lanza una excepción para códigos 4xx/5xx
-
-                # Considerar verificar si el status code es específicamente 200 OK o 409 Conflict (ya existe)
-                # if session_response.status_code == 200 or session_response.status_code == 409:
-                #     self.session_created = True
-                # else:
-                #     raise Exception(f"Unexpected status code {session_response.status_code}: {session_response.text}")
-
-                # Una vez que raise_for_status() no lanzó error, asumimos que la sesión está lista.
-                self.session_created = True
-                print(f"Session {self.session_id} ensured for user {self.user_id} in app {self.app_name}.")
-
-            except httpx.HTTPStatusError as e:
-                 # Manejar específicamente el caso "Session already exists" si es necesario
-                 # Por ejemplo, si el ADK devuelve un código específico o texto en el cuerpo para esto.
-                 # La implementación de ADK para crear sesión puede devolver 409 Conflict.
-                 if e.response.status_code == 409:
-                     print(f"Session {self.session_id} already exists.")
-                     self.session_created = True # Si ya existe, para nosotros es "asegurada"
-                 else:
-                     print(f"HTTP error ensuring session: {e}")
-                     raise Exception(f"HTTP error ensuring session: {e.response.text}") from e # Relanza con más contexto
-            except httpx.RequestError as e:
-                 print(f"Request error ensuring session: {e}")
-                 raise Exception(f"Request error ensuring session: {e}") from e
-            except Exception as e:
-                 print(f"An unexpected error occurred ensuring session: {e}")
-                 raise Exception(f"An unexpected error occurred ensuring session: {e}") from e
-
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 409: # Conflict - Session already exists
+                print(f"Session {target_session_id} already exists for user {target_user_id}.")
+                if is_ensuring_instance_session:
+                    self.instance_session_created = True
+            else:
+                print(f"HTTP error ensuring session {target_session_id}: {e.response.status_code} - {e.response.text}")
+                raise Exception(f"HTTP error ensuring session: {e.response.text}") from e
+        except httpx.RequestError as e:
+            print(f"Request error ensuring session {target_session_id}: {e}")
+            raise Exception(f"Request error ensuring session: {e}") from e
+        except Exception as e:
+            print(f"An unexpected error occurred ensuring session {target_session_id}: {e}")
+            raise Exception(f"An unexpected error occurred ensuring session: {e}") from e
 
     async def analyze_message(
         self,
         message: str,
-        initial_state: Dict[str, Any] = None
+        initial_state: Optional[Dict[str, Any]] = None
     ) -> Dict[str, str]:
         """
         Sends a message to the LLM and gets its analysis.
+        Creates a NEW user and session for EACH call.
 
         Args:
             message: The message to analyze
-            initial_state: Initial state for the session
+            initial_state: Initial state for the new session
 
         Returns:
             A dictionary containing 'classification' and 'reason' from the LLM response
         """
-        try:
-            await self.ensure_session(initial_state)
+        call_user_id = f"u_{uuid.uuid4()}"
+        call_session_id = f"s_{uuid.uuid4()}"
+        llm_response = None 
 
-            run_url = f"{self.llm_api_host}/run"
-            llm_response = await self.client.post(
-                run_url,
-                json={
-                    "app_name": self.app_name,
-                    "user_id": self.user_id,
-                    "session_id": self.session_id,
-                    "new_message": {
-                        "role": "user",
-                        "parts": [{"text": message}]
-                    },
-                    "streaming": False
-                }
+        print(f"Analyzing message for new user: {call_user_id}, new session: {call_session_id}")
+
+        try:
+            await self.ensure_session(
+                initial_state=initial_state,
+                user_id_to_ensure=call_user_id,
+                session_id_to_ensure=call_session_id
             )
 
+            run_url = f"{self.llm_api_host}/run"
+            payload = {
+                "app_name": self.app_name,
+                "user_id": call_user_id,
+                "session_id": call_session_id,
+                "new_message": {
+                    "role": "user",
+                    "parts": [{"text": message}]
+                },
+                "streaming": False
+            }
+            llm_response = await self.client.post(run_url, json=payload)
             llm_response.raise_for_status()
             response_data = llm_response.json()
             
-            # El último evento siempre contiene la clasificación
-            last_event = response_data[-1]
-            text = last_event["content"]["parts"][0]["text"]
+            if not response_data:
+                raise ValueError("LLM response data is empty.")
             
-            # Extraer CLASSIFICATION y REASON
-            classification = text.split("CLASSIFICATION:")[1].split("\n")[0].strip()
-            reason = text.split("REASON:")[1].split("\n")[0].strip()
+            last_event = response_data[-1]
+            if not isinstance(last_event, dict) or "content" not in last_event or \
+               not isinstance(last_event["content"], dict) or "parts" not in last_event["content"] or \
+               not isinstance(last_event["content"]["parts"], list) or not last_event["content"]["parts"] or \
+               not isinstance(last_event["content"]["parts"][0], dict) or \
+               "text" not in last_event["content"]["parts"][0]:
+                raise ValueError(f"Unexpected structure in LLM response's last event: {last_event}")
+
+            text_content = last_event["content"]["parts"][0]["text"]
+            
+            classification_parts = text_content.split("CLASSIFICATION:")
+            if len(classification_parts) < 2:
+                raise ValueError(f"CLASSIFICATION not found in LLM response: {text_content}")
+            classification = classification_parts[1].split("\n")[0].strip()
+            
+            reason_parts = text_content.split("REASON:")
+            if len(reason_parts) < 2:
+                raise ValueError(f"REASON not found in LLM response: {text_content}")
+            reason = reason_parts[1].split("\n")[0].strip()
             
             return {
                 "classification": classification,
@@ -135,18 +167,21 @@ class LLMClient:
             }
 
         except httpx.HTTPStatusError as e:
-            error_detail = e.response.text
-            print(f"HTTP error during LLM analysis: {e} - Details: {error_detail}")
+            error_detail = e.response.text if e.response else str(e)
+            print(f"HTTP error during LLM analysis for {call_user_id}/{call_session_id}: {e} - Details: {error_detail}")
             try:
-                error_data = e.response.json()
+                error_data = e.response.json() if e.response else {}
                 raise Exception(f"LLM analysis failed: {error_data.get('detail', error_detail)}") from e
             except json.JSONDecodeError:
-                raise Exception(f"LLM analysis failed: {error_detail}") from e
-
+                raise Exception(f"LLM analysis failed with non-JSON error: {error_detail}") from e
         except httpx.RequestError as e:
-            print(f"Request error during LLM analysis: {e}")
+            print(f"Request error during LLM analysis for {call_user_id}/{call_session_id}: {e}")
             raise Exception(f"Request error during LLM analysis: {e}") from e
+        except ValueError as e: 
+            print(f"Data error during LLM analysis for {call_user_id}/{call_session_id}: {e}")
+            raw_response_info = llm_response.text if llm_response else "N/A"
+            raise Exception(f"Data error during LLM analysis: {e}. Raw response: {raw_response_info}") from e
         except Exception as e:
-            print(f"An unexpected error occurred during LLM analysis: {e}")
-            raw_response_info = llm_response.json() if 'llm_response' in locals() and llm_response.text else "N/A"
+            print(f"An unexpected error occurred during LLM analysis for {call_user_id}/{call_session_id}: {e}")
+            raw_response_info = llm_response.text if llm_response else "N/A"
             raise Exception(f"An unexpected error occurred during LLM analysis: {e}. Raw response: {raw_response_info}") from e
