@@ -4,11 +4,17 @@ import base64
 import json
 import logging
 import time
+import sys
 from fastapi import APIRouter, HTTPException, Request
 from src.pubsub import publish_response
 from src.transaction_update_detector import TransactionUpdateDetectorRedis
 
-
+# Configure logging for Cloud Run
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout  # Use stdout instead of stderr for Cloud Run
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,12 +56,18 @@ def filter_exact_matches(transactions: list) -> list:
 
 @router.post("/updates")
 async def process_transaction_update(request: Request):
-    update_detector: TransactionUpdateDetectorRedis | None = request.app.state.update_detector  # type: ignore
+    update_detector: TransactionUpdateDetectorRedis | None = (
+        request.app.state.update_detector  # type: ignore
+    )
     
     if not update_detector:
-        logger.error("Update detector is not available (app.state.update_detector is None).")
-        raise HTTPException(status_code=503, 
-                            detail="Update service temporarily unavailable (detector not initialized).")
+        logger.error(
+            "Update detector is not available (app.state.update_detector is None)"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Update service temporarily unavailable"
+        )
 
     decoded_message_str = ""  # For early error logging
     data_b64_content = ""
@@ -63,20 +75,26 @@ async def process_transaction_update(request: Request):
         logger.info("Processing /updates request")
         body = await request.json()
         
-        data_b64_content = body.get("message", {}).get("data") if "message" in body else body.get("data")
+        data_b64_content = (
+            body.get("message", {}).get("data")
+            if "message" in body
+            else body.get("data")
+        )
 
         if not data_b64_content:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid message format. Expected 'data' (base64 string) or 'message.data' (base64 string)."
+                detail="Invalid message format. Expected 'data' or 'message.data'"
             )
         
-        decoded_message_str = base64.b64decode(data_b64_content).decode("utf-8").strip()
-        logger.debug(f"Decoded message: {decoded_message_str}")
+        decoded_message_str = base64.b64decode(
+            data_b64_content
+        ).decode("utf-8").strip()
+        logger.debug("Decoded message: %s", decoded_message_str)
         
         # Work directly with the dictionary parsed from JSON
         transaction_dict = json.loads(decoded_message_str)
-        logger.debug(f"Transaction dictionary to process: {transaction_dict}")
+        logger.debug("Transaction dictionary to process: %s", transaction_dict)
         
         updated_transactions = await update_detector.detect_updates(
             new_transaction=transaction_dict 
@@ -89,7 +107,6 @@ async def process_transaction_update(request: Request):
         if updated_transactions["updates"]:
             for update in updated_transactions["updates"]:
                 # First send to simility-transactions
-                print(updated_transactions)
                 pubsub_data = {
                     "original_checksum": update["original_checksum"],
                     "new_checksum": update["new_checksum"],
@@ -102,15 +119,26 @@ async def process_transaction_update(request: Request):
                     "date": time.strftime("%Y-%m-%d")
                 }
                 
-                logger.info(f"Sending update to Pub/Sub simility-transactions: {pubsub_data}")
+                logger.info(
+                    "Sending update to Pub/Sub simility-transactions: %s",
+                    pubsub_data
+                )
                 publish_response(pubsub_data, "simility-transactions")
                 
                 # Then call LLM
-                message_for_llm = f"checksum_new: {update['new_checksum']}, checksum_old: {update['original_checksum']}, account_number: {transaction_dict['account_number']}, bank: {transaction_dict['bank']}, company_id: {transaction_dict['company_id']}"
+                message_for_llm = (
+                    f"checksum_new: {update['new_checksum']}, "
+                    f"checksum_old: {update['original_checksum']}, "
+                    f"account_number: {transaction_dict['account_number']}, "
+                    f"bank: {transaction_dict['bank']}, "
+                    f"company_id: {transaction_dict['company_id']}"
+                )
                 
                 try:
-                    llm_result = await updates_llm_client.analyze_message(message=message_for_llm)
-                    logger.info(f"LLM analysis result: {llm_result}")
+                    llm_result = await updates_llm_client.analyze_message(
+                        message=message_for_llm
+                    )
+                    logger.info("LLM analysis result: %s", llm_result)
                     
                     # Send LLM result to llm-simility-responses
                     llm_pubsub_data = {
@@ -124,11 +152,14 @@ async def process_transaction_update(request: Request):
                         "date": time.strftime("%Y-%m-%d")
                     }
                     
-                    logger.info(f"Sending LLM result to Pub/Sub llm-simility-responses: {llm_pubsub_data}")
+                    logger.info(
+                        "Sending LLM result to Pub/Sub llm-simility-responses: %s",
+                        llm_pubsub_data
+                    )
                     publish_response(llm_pubsub_data, "llm-simility-responses")
                     
                 except Exception as e:
-                    logger.error(f"Error calling LLM: {str(e)}")
+                    logger.error("Error calling LLM: %s", str(e))
 
         return {
             "processed_checksum": transaction_dict.get("checksum", "N/A"),
@@ -136,11 +167,34 @@ async def process_transaction_update(request: Request):
         }
 
     except json.JSONDecodeError as e:
-        logger.error(f"JSONDecodeError: {e}. Decoded payload: {decoded_message_str}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Error decoding JSON: {str(e)}")
+        logger.error(
+            "JSONDecodeError: %s. Decoded payload: %s",
+            e,
+            decoded_message_str,
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error decoding JSON: {str(e)}"
+        )
     except base64.binascii.Error as e:
-        logger.error(f"Base64DecodeError: {e}. Base64 content: {data_b64_content}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Error decoding base64: {str(e)}")
+        logger.error(
+            "Base64DecodeError: %s. Base64 content: %s",
+            e,
+            data_b64_content,
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error decoding base64: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Unexpected error processing update: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(
+            "Unexpected error processing update: %s",
+            e,
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
