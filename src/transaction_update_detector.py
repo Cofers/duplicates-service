@@ -66,17 +66,21 @@ class TransactionUpdateDetectorRedis:
                     value_str = str(item['value'])
                     serialized_parts.append(key_str + value_str)
                 else:
-                    
-                    logger.warning(f"Metadata item does not have the expected format {{'key':k, 'value':v}}: {item}. Using 'invalid_metadata_item'.")
-                    
+                    logger.warning(
+                        f"Metadata item does not have the expected format "
+                        f"{{'key':k, 'value':v}}: {item}. Using 'invalid_metadata_item'."
+                    )
                     return "invalid_metadata_structure" 
             
-            if not serialized_parts: # If the list was empty or all items were invalid
+            if not serialized_parts:  # If the list was empty or all items were invalid
                 return "N/A"
 
             return "".join(serialized_parts)
         except Exception as e:
-            logger.error(f"Error during simple metadata serialization (type: {type(metadata)}): {e}", exc_info=True)
+            logger.error(
+                f"Error during simple metadata serialization (type: {type(metadata)}): {e}",
+                exc_info=True
+            )
             return "serialization_error"
 
     def _generate_redis_key_for_candidates(
@@ -86,7 +90,7 @@ class TransactionUpdateDetectorRedis:
         account_number: str, 
         transaction_date_str: str, 
         amount_str: str,
-        metadata_serialized_str: str  # New parameter with serialized string
+        metadata_serialized_str: str
     ) -> str:
         """Generates Redis key including the serialized metadata string."""
         # Colons (:) are Redis separators. Ensure metadata_serialized_str doesn't contain them
@@ -98,26 +102,34 @@ class TransactionUpdateDetectorRedis:
         return value is None or (isinstance(value, float) and math.isnan(value))
 
     async def _get_candidates_from_redis(self, redis_key: str) -> list[dict[str, str]] | None:
-        # ... (no changes from your last version)
         try:
             if not await self.redis_client.exists(redis_key):
                 logger.debug(f"Redis key {redis_key} does not exist.")
                 return None
             json_cand_list_bytes = await self.redis_client.lrange(redis_key, 0, -1)
             if not json_cand_list_bytes:
-                 logger.debug(f"Redis key {redis_key} exists but stores an empty list.")
-                 return []
-            candidates = [json.loads(cand_str_bytes.decode('utf-8')) for cand_str_bytes in json_cand_list_bytes]
+                logger.debug(f"Redis key {redis_key} exists but stores an empty list.")
+                return []
+            candidates = [
+                json.loads(cand_str_bytes.decode('utf-8'))
+                for cand_str_bytes in json_cand_list_bytes
+            ]
             return candidates
         except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error for Redis key {redis_key}. Data might be corrupted: {e}", exc_info=True)
+            logger.error(
+                f"JSON decode error for Redis key {redis_key}. "
+                f"Data might be corrupted: {e}",
+                exc_info=True
+            )
             return None
         except Exception as e:
-            logger.error(f"Error getting candidates from Redis key {redis_key}: {e}", exc_info=True)
+            logger.error(
+                f"Error getting candidates from Redis key {redis_key}: {e}",
+                exc_info=True
+            )
             return None
 
     async def _store_list_to_redis(self, redis_key: str, list_to_store: list[dict[str, str]]):
-        # ... (no changes from your last version)
         try:
             pipe = self.redis_client.pipeline()
             pipe.delete(redis_key) 
@@ -129,7 +141,10 @@ class TransactionUpdateDetectorRedis:
             action = "Stored" if list_to_store else "Stored empty list (marker)"
             logger.info(f"{action} with {len(list_to_store)} items in Redis for key: {redis_key}")
         except Exception as e:
-            logger.error(f"Error storing list to Redis key {redis_key}: {e}", exc_info=True)
+            logger.error(
+                f"Error storing list to Redis key {redis_key}: {e}",
+                exc_info=True
+            )
 
     def _normalize_text(self, text: any) -> str:
         if self.custom_is_na(text): 
@@ -142,7 +157,8 @@ class TransactionUpdateDetectorRedis:
     def _cosine_similarity(self, text1_norm: str, text2_norm: str) -> float:
         words1 = text1_norm.split()
         words2 = text2_norm.split()
-        if not words1 or not words2: return 0.0
+        if not words1 or not words2:
+            return 0.0
         vector1 = Counter(words1)
         vector2 = Counter(words2)
         intersection = set(vector1.keys()) & set(vector2.keys())
@@ -150,7 +166,8 @@ class TransactionUpdateDetectorRedis:
         sum1 = sum([vector1[x] ** 2 for x in vector1.keys()])
         sum2 = sum([vector2[x] ** 2 for x in vector2.keys()])
         denominator = math.sqrt(sum1) * math.sqrt(sum2)
-        if not denominator: return 0.0
+        if not denominator:
+            return 0.0
         return float(numerator) / denominator
 
     def _jaro_winkler_similarity(self, text1_norm: str, text2_norm: str) -> float:
@@ -171,9 +188,14 @@ class TransactionUpdateDetectorRedis:
                 transaction_date_obj = date_input
             elif isinstance(date_input, str):
                 date_str_part = date_input.split(' ')[0]
-                transaction_date_obj = datetime.datetime.strptime(date_str_part, '%Y-%m-%d').date()
+                transaction_date_obj = datetime.datetime.strptime(
+                    date_str_part, '%Y-%m-%d'
+                ).date()
             else:
-                raise ValueError(f"Unsupported date format or unexpected type: {type(date_input)} for value {date_input}")
+                raise ValueError(
+                    f"Unsupported date format or unexpected type: "
+                    f"{type(date_input)} for value {date_input}"
+                )
             transaction_date_str = transaction_date_obj.strftime('%Y-%m-%d')
             
             amount_str = self._format_amount_for_key(new_transaction['amount'])
@@ -182,17 +204,29 @@ class TransactionUpdateDetectorRedis:
             metadata_new = new_transaction.get('metadata') 
             
         except KeyError as e:
-            logger.error(f"Required field missing in new_transaction: {e}", exc_info=True); return []
+            logger.error(
+                f"Required field missing in new_transaction: {e}",
+                exc_info=True
+            )
+            return []
         except ValueError as e: 
-            logger.error(f"Error processing date '{new_transaction.get('transaction_date')}': {e}", exc_info=True); return []
+            logger.error(
+                f"Error processing date '{new_transaction.get('transaction_date')}': {e}",
+                exc_info=True
+            )
+            return []
         except Exception as e: 
-            logger.error(f"Error processing new_transaction fields: {e}", exc_info=True); return []
+            logger.error(
+                f"Error processing new_transaction fields: {e}",
+                exc_info=True
+            )
+            return []
 
-        
         metadata_serialized_str_new = self._serialize_metadata_for_key(metadata_new)
 
         redis_key = self._generate_redis_key_for_candidates(
-            company_id, bank, account_number, transaction_date_str, amount_str, metadata_serialized_str_new  # Pass serialized metadata string
+            company_id, bank, account_number, transaction_date_str,
+            amount_str, metadata_serialized_str_new
         )
         
         current_redis_candidates = await self._get_candidates_from_redis(redis_key)
@@ -203,10 +237,18 @@ class TransactionUpdateDetectorRedis:
         new_transaction_is_in_redis_list = False
 
         if current_redis_candidates is None: 
-            logger.info(f"No data or invalid data in Redis for key {redis_key}. Will store new transaction.")
+            logger.info(
+                f"No data or invalid data in Redis for key {redis_key}. "
+                f"Will store new transaction."
+            )
             final_list_for_redis = [new_transaction_data_to_add]
+            await self._store_list_to_redis(redis_key, final_list_for_redis)
+            return []
         else: 
-            logger.info(f"Found {len(current_redis_candidates)} candidates in Redis for key {redis_key}.")
+            logger.info(
+                f"Found {len(current_redis_candidates)} candidates in Redis "
+                f"for key {redis_key}."
+            )
             normalized_concept_new = self._normalize_text(concept_new_raw)
 
             for cand in current_redis_candidates:
@@ -216,16 +258,27 @@ class TransactionUpdateDetectorRedis:
                     continue 
                 concept_candidate_raw = cand['ctx']
                 normalized_concept_candidate = self._normalize_text(concept_candidate_raw)
-                lev_dist = levenshtein_distance(normalized_concept_new, normalized_concept_candidate)
-                cos_sim = self._cosine_similarity(normalized_concept_new, normalized_concept_candidate) 
-                jaro_sim = self._jaro_winkler_similarity(normalized_concept_new, normalized_concept_candidate)
+                lev_dist = levenshtein_distance(
+                    normalized_concept_new, normalized_concept_candidate
+                )
+                cos_sim = self._cosine_similarity(
+                    normalized_concept_new, normalized_concept_candidate
+                ) 
+                jaro_sim = self._jaro_winkler_similarity(
+                    normalized_concept_new, normalized_concept_candidate
+                )
                 
                 # Add logs to see the values
-                logger.debug(f"Comparing concepts:")
+                logger.debug("Comparing concepts:")
                 logger.debug(f"Original: {concept_candidate_raw}")
                 logger.debug(f"New: {concept_new_raw}")
-                logger.debug(f"Metrics: L={lev_dist}, C={cos_sim:.4f}, J={jaro_sim:.4f}")
-                logger.debug(f"Thresholds: L<={self.levenshtein_threshold}, C>={self.cosine_threshold}, J>={self.jaro_winkler_threshold}")
+                logger.debug(
+                    f"Metrics: L={lev_dist}, C={cos_sim:.4f}, J={jaro_sim:.4f}"
+                )
+                logger.debug(
+                    f"Thresholds: L<={self.levenshtein_threshold}, "
+                    f"C>={self.cosine_threshold}, J>={self.jaro_winkler_threshold}"
+                )
                 
                 is_update = False
                 if lev_dist <= self.levenshtein_threshold: 
@@ -239,7 +292,11 @@ class TransactionUpdateDetectorRedis:
                     logger.info("Update detected by Jaro-Winkler")
                 
                 if is_update:
-                    logger.debug(f"Update found: new_cs={checksum_new} updates orig_cs={checksum_candidate} (L:{lev_dist},C:{cos_sim:.2f},J:{jaro_sim:.2f})")
+                    logger.debug(
+                        f"Update found: new_cs={checksum_new} updates "
+                        f"orig_cs={checksum_candidate} "
+                        f"(L:{lev_dist},C:{cos_sim:.2f},J:{jaro_sim:.2f})"
+                    )
                     updated_transactions_details.append({
                         "original_checksum": checksum_candidate,
                         "new_checksum": checksum_new,
@@ -255,14 +312,15 @@ class TransactionUpdateDetectorRedis:
                         }
                     })
             
+            # Only store in Redis if the new transaction is not already in the list
             if not new_transaction_is_in_redis_list:
                 final_list_for_redis = current_redis_candidates + [new_transaction_data_to_add]
-            else:
-                final_list_for_redis = current_redis_candidates
-
-        await self._store_list_to_redis(redis_key, final_list_for_redis)
+                await self._store_list_to_redis(redis_key, final_list_for_redis)
             
         if updated_transactions_details:
-            logger.info(f"Found {len(updated_transactions_details)} original transaction(s) updated by new transaction {checksum_new}")
+            logger.info(
+                f"Found {len(updated_transactions_details)} original transaction(s) "
+                f"updated by new transaction {checksum_new}"
+            )
             
         return updated_transactions_details

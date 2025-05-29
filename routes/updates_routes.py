@@ -100,6 +100,13 @@ async def process_transaction_update(request: Request):
             new_transaction=transaction_dict 
         )
         
+        # If no updates were found, return early
+        if not updated_transactions:
+            return {
+                "processed_checksum": transaction_dict.get("checksum", "N/A"),
+                "updates": []
+            }
+        
         # Filter exact transactions before sending to Pub/Sub
         updated_transactions = filter_exact_matches(updated_transactions)
         
