@@ -66,10 +66,9 @@ class TransactionUpdateDetectorRedis:
                     value_str = str(item['value'])
                     serialized_parts.append(key_str + value_str)
                 else:
-                    # If an item is not the expected dict, the structure is invalid for this method
+                    
                     logger.warning(f"Metadata item does not have the expected format {{'key':k, 'value':v}}: {item}. Using 'invalid_metadata_item'.")
-                    # You could choose to add a placeholder or stop serialization
-                    # For consistency, if an item is bad, the entire serialization is "invalid" for this logic
+                    
                     return "invalid_metadata_structure" 
             
             if not serialized_parts: # If the list was empty or all items were invalid

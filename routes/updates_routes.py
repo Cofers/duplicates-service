@@ -6,40 +6,61 @@ import logging
 import time
 from fastapi import APIRouter, HTTPException, Request
 from src.pubsub import publish_response
-# from typing import Any # Ya no es necesario para el modelo Pydantic aquí
+from src.transaction_update_detector import TransactionUpdateDetectorRedis
 
-# Importa tu clase TransactionUpdateDetectorRedis desde su ubicación correcta
-try:
-    from src.transaction_update_detector import TransactionUpdateDetectorRedis # Ajusta si tu ruta es diferente
-except ImportError:
-    logging.error("FALLO AL IMPORTAR TransactionUpdateDetectorRedis desde src.transaction_update_detector")
-    class TransactionUpdateDetectorRedis: pass # Placeholder
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# El LLMClient se mantiene como lo tenías.
-# try:
-#     from src.lib.llm_client import LLMClient
-#     updates_llm_client = LLMClient(...)
-# except ImportError:
-#     updates_llm_client = None
-#     logging.warning("LLMClient no se pudo importar o inicializar.")
+# LLMClient remains as is
+try:
+    from src.llm_client import LLMClient
+    updates_llm_client = LLMClient(
+        app_name="updates",
+        default_host=(
+            "https://transactions-update-agent-192085613711.us-east1.run.app"
+        )
+    )
+except ImportError:
+    updates_llm_client = None
+    logging.warning("LLMClient could not be imported or initialized.")
 
+def filter_exact_matches(transactions: list) -> list:
+    """
+    Filter out transactions that are exact matches based on similarity metrics.
+    Exact matches are defined as:
+    - levenshtein_distance = 0
+    - cosine_similarity = 1
+    - jaro_winkler_similarity = 1
+    """
+    original_count = len(transactions)
+    filtered_transactions = [
+        transaction for transaction in transactions
+        if not (
+            transaction["metrics"]["levenshtein_distance"] == 0
+            and transaction["metrics"]["cosine_similarity"] == 1
+            and transaction["metrics"]["jaro_winkler_similarity"] == 1
+        )
+    ]
+    discarded_count = original_count - len(filtered_transactions)
+    if discarded_count > 0:
+        logger.info(f"Discarded {discarded_count} transactions for being exact matches")
+    return filtered_transactions
 
 @router.post("/updates")
 async def process_transaction_update(request: Request):
-    update_detector: TransactionUpdateDetectorRedis | None = request.app.state.update_detector # type: ignore
+    update_detector: TransactionUpdateDetectorRedis | None = request.app.state.update_detector  # type: ignore
     
     if not update_detector:
-        logger.error("El detector de actualizaciones no está disponible (app.state.update_detector es None).")
+        logger.error("Update detector is not available (app.state.update_detector is None).")
         raise HTTPException(status_code=503, 
-                            detail="Servicio de actualizaciones no disponible temporalmente (detector no inicializado).")
+                            detail="Update service temporarily unavailable (detector not initialized).")
 
-    decoded_message_str = "" # Para el logging en caso de error temprano
+    decoded_message_str = ""  # For early error logging
     data_b64_content = ""
     try:
-        logger.info("Procesando solicitud /updates")
+        logger.info("Processing /updates request")
         body = await request.json()
         
         data_b64_content = body.get("message", {}).get("data") if "message" in body else body.get("data")
@@ -47,54 +68,28 @@ async def process_transaction_update(request: Request):
         if not data_b64_content:
             raise HTTPException(
                 status_code=400,
-                detail="Formato de mensaje inválido. Se esperaba 'data' (string base64) o 'message.data' (string base64)."
+                detail="Invalid message format. Expected 'data' (base64 string) or 'message.data' (base64 string)."
             )
         
         decoded_message_str = base64.b64decode(data_b64_content).decode("utf-8").strip()
-        logger.debug(f"Mensaje decodificado: {decoded_message_str}")
+        logger.debug(f"Decoded message: {decoded_message_str}")
         
-        # Trabajar directamente con el diccionario parseado desde JSON
+        # Work directly with the dictionary parsed from JSON
         transaction_dict = json.loads(decoded_message_str)
-        logger.debug(f"Diccionario de transacción para procesar: {transaction_dict}")
-        '''
-        transaction_dict["transaction_date"] = "2025-05-26"
-        transaction_dict["checksum"] = "489d5480655a88026dad3bed01394bea6f2d2bccc"
-        transaction_dict["etl_checksum"] = "3e6bc8e597f676f7b24aa2f860974c64"
-        transaction_dict["concept"] = "Anticipo OP 8805 / CGO TRANS ELEC ismaelssssss"
-        transaction_dict["amount"] = -1040601
-        transaction_dict["account_number"] = "65506535234"
-        transaction_dict["bank"] = "santander"
-        transaction_dict["account_alias"] = ""
-        transaction_dict["currency"] = "MXN"
-        transaction_dict["report_type"] = "3 Months - Extension CSV"
-        transaction_dict["extraction_date"] = "2025-05-26 18:40:31.000000 UTC"
-        transaction_dict["user_id"] = "81616deb-1bfe-4645-97db-2573cb9eb09b"
-        transaction_dict["company_id"] = "3d52c627-498e-4e74-9dcd-f2af4953bb23"
-        transaction_dict["reported_remaining"] = 5915374
-        transaction_dict["created_at"] = "2025-05-26 00:00:00.000000 UTC"
-        transaction_dict["metadata"] = [{
-            "key": "origin",
-            "value": "extension"
-        }, {
-            "key": "sucursal",
-            "value": "0981"
-        }, {
-            "key": "description",
-            "value": "CGO TRANS ELEC"
-        }, {
-            "key": "referencia",
-            "value": "350241N742"
-        }]
-        '''
+        logger.debug(f"Transaction dictionary to process: {transaction_dict}")
         
         updated_transactions = await update_detector.detect_updates(
             new_transaction=transaction_dict 
         )
         
+        # Filter exact transactions before sending to Pub/Sub
+        updated_transactions = filter_exact_matches(updated_transactions)
         
-        # Si hay actualizaciones, enviar a Pub/Sub
-        if updated_transactions:
-            for update in updated_transactions:
+        # If there are updates, send to Pub/Sub
+        if updated_transactions["updates"]:
+            for update in updated_transactions["updates"]:
+                # First send to simility-transactions
+                print(updated_transactions)
                 pubsub_data = {
                     "original_checksum": update["original_checksum"],
                     "new_checksum": update["new_checksum"],
@@ -107,21 +102,45 @@ async def process_transaction_update(request: Request):
                     "date": time.strftime("%Y-%m-%d")
                 }
                 
-                logger.info(f"Enviando actualización a Pub/Sub: {pubsub_data}")
+                logger.info(f"Sending update to Pub/Sub simility-transactions: {pubsub_data}")
                 publish_response(pubsub_data, "simility-transactions")
-                logger.info("Actualización enviada a Pub/Sub")
-        
+                
+                # Then call LLM
+                message_for_llm = f"checksum_new: {update['new_checksum']}, checksum_old: {update['original_checksum']}, account_number: {transaction_dict['account_number']}, bank: {transaction_dict['bank']}, company_id: {transaction_dict['company_id']}"
+                
+                try:
+                    llm_result = await updates_llm_client.analyze_message(message=message_for_llm)
+                    logger.info(f"LLM analysis result: {llm_result}")
+                    
+                    # Send LLM result to llm-simility-responses
+                    llm_pubsub_data = {
+                        "original_checksum": update["original_checksum"],
+                        "new_checksum": update["new_checksum"],
+                        "classification": llm_result["classification"],
+                        "reason": llm_result["reason"],
+                        "company_id": transaction_dict["company_id"],
+                        "bank": transaction_dict["bank"],
+                        "account_number": transaction_dict["account_number"],
+                        "date": time.strftime("%Y-%m-%d")
+                    }
+                    
+                    logger.info(f"Sending LLM result to Pub/Sub llm-simility-responses: {llm_pubsub_data}")
+                    publish_response(llm_pubsub_data, "llm-simility-responses")
+                    
+                except Exception as e:
+                    logger.error(f"Error calling LLM: {str(e)}")
+
         return {
             "processed_checksum": transaction_dict.get("checksum", "N/A"),
             "updates": updated_transactions
         }
 
     except json.JSONDecodeError as e:
-        logger.error(f"JSONDecodeError: {e}. Payload decodificado: {decoded_message_str}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Error decodificando JSON: {str(e)}")
+        logger.error(f"JSONDecodeError: {e}. Decoded payload: {decoded_message_str}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Error decoding JSON: {str(e)}")
     except base64.binascii.Error as e:
-        logger.error(f"Base64DecodeError: {e}. Contenido base64: {data_b64_content}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Error decodificando base64: {str(e)}")
+        logger.error(f"Base64DecodeError: {e}. Base64 content: {data_b64_content}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Error decoding base64: {str(e)}")
     except Exception as e:
-        logger.error(f"Error inesperado procesando actualización: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+        logger.error(f"Unexpected error processing update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
