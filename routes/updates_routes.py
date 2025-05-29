@@ -112,9 +112,12 @@ async def process_transaction_update(request: Request):
         # Filter exact transactions before sending to Pub/Sub
         updated_transactions = filter_exact_matches(updated_transactions)
         print(updated_transactions)
+        
+        # Initialize llm_results list
+        llm_results = []
+        
         # If there are updates, send to Pub/Sub
         if updated_transactions:
-            llm_results = []
             for update in updated_transactions:
                 # First send to simility-transactions
                 pubsub_data = {
