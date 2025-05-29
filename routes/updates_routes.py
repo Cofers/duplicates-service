@@ -51,7 +51,9 @@ def filter_exact_matches(transactions: list) -> list:
     ]
     discarded_count = original_count - len(filtered_transactions)
     if discarded_count > 0:
-        logger.info(f"Discarded {discarded_count} transactions for being exact matches")
+        logger.info(
+            f"Discarded {discarded_count} transactions for being exact matches"
+        )
     return filtered_transactions
 
 @router.post("/updates")
@@ -99,7 +101,7 @@ async def process_transaction_update(request: Request):
         updated_transactions = await update_detector.detect_updates(
             new_transaction=transaction_dict 
         )
-        
+        print(updated_transactions)
         # If no updates were found, return early
         if not updated_transactions:
             return {
@@ -109,10 +111,10 @@ async def process_transaction_update(request: Request):
         
         # Filter exact transactions before sending to Pub/Sub
         updated_transactions = filter_exact_matches(updated_transactions)
-        
+        print(updated_transactions)
         # If there are updates, send to Pub/Sub
-        if updated_transactions["updates"]:
-            for update in updated_transactions["updates"]:
+        if updated_transactions:
+            for update in updated_transactions:
                 # First send to simility-transactions
                 pubsub_data = {
                     "original_checksum": update["original_checksum"],
