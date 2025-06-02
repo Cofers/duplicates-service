@@ -26,6 +26,7 @@ try:
         app_name="updates",
         default_host=(
             "https://transactions-update-agent-192085613711.us-east1.run.app"
+            #"http://localhost:9000"
         )
     )
 except ImportError:
@@ -101,7 +102,8 @@ async def process_transaction_update(request: Request):
         updated_transactions = await update_detector.detect_updates(
             new_transaction=transaction_dict 
         )
-        print(updated_transactions)
+
+        print(f"transaccion detectada: {updated_transactions}")
         # If no updates were found, return early
         if not updated_transactions:
             return {
@@ -111,7 +113,7 @@ async def process_transaction_update(request: Request):
         
         # Filter exact transactions before sending to Pub/Sub
         updated_transactions = filter_exact_matches(updated_transactions)
-        print(updated_transactions)
+    
         
         # Initialize llm_results list
         llm_results = []
