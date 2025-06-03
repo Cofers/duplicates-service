@@ -67,18 +67,18 @@ async def process_transaction_endpoint(request: Request): # Renamed for clarity
             logger.error(f"JSON decoding error for message content: {str(json_err)}")
             raise HTTPException(status_code=400, detail=f"Invalid JSON format in decoded message data: {str(json_err)}")
         
-
-        current_transaction["transaction_date"] = "2025-05-20"
-        current_transaction["checksum"] = "681fea7810dc61776c21fa6c"
+        '''
+        current_transaction["transaction_date"] = "2025-05-21"
+        current_transaction["checksum"] = "681fea7810dc61776c21fa6z"
         current_transaction["concept"] = "15 FACTURA ART"
         current_transaction["amount"] = -10000000
         current_transaction["account_number"] = "653180003810259331"
         current_transaction["bank"] = "unalanapay"
         current_transaction["company_id"] = "ccee6737-6e3b-40ce-b7a0-016ec8e5d3c3"
         current_transaction["metadata"] = {"origin": "syncfy"}
-
+        
         logger.info(f"Processing transaction with ID/Checksum: {current_transaction.get('checksum', 'N/A')}")
-
+        '''
         # --- Core Logic: Process the transaction using Mosaic ---
         # This single call handles checksum generation, Redis checks (exact and pattern),
         # and adding new entries to Redis if it's not an exact duplicate.
@@ -149,7 +149,7 @@ async def process_transaction_endpoint(request: Request): # Renamed for clarity
             return {
                 "status": "duplicate_detected",
                 "details": mosaic_processing_result, # Contains all relevant flags and checksums
-                "processed_transaction_id": current_transaction.get("checksum", "") # ID of the transaction just processed
+                "checksum_new": current_transaction.get("checksum", "") # ID of the transaction just processed
             }
         
         elif mosaic_processing_result.get("error"):
