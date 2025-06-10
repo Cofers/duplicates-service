@@ -31,10 +31,11 @@ def publish_response(data: dict, topic_name: str) -> None:
         topic_path = publisher.topic_path("production-400914", topic_name)
         
         # Convert data to JSON string
+        attributes = {"Content-Type": "application/json"}
         message_data = json.dumps(data).encode("utf-8")
         
         # Publish the message
-        future = publisher.publish(topic_path, message_data)
+        future = publisher.publish(topic_path, message_data, **attributes)
         future.result()  # Wait for the publish to complete
         
     except GoogleAPIError as e:
