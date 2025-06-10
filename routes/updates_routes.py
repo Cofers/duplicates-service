@@ -164,6 +164,18 @@ async def process_transaction_update(request: Request):
                         "reason": llm_result["reason"]
                     })
                     
+                    # Check if reason contains UPDATE and send to transaction-out-updates
+                    if "UPDATE" in llm_result["reason"].upper():
+                        update_pubsub_data = {
+                            "old_checksum": update["original_checksum"],
+                            "new_checksum": update["new_checksum"]
+                        }
+                        logger.info(
+                            "Sending update to Pub/Sub transaction-out-updates: %s",
+                            update_pubsub_data
+                        )
+                        publish_response(update_pubsub_data, "transaction-out-updates")
+                    
                     # Send LLM result to llm-simility-responses
                     llm_pubsub_data = {
                         "original_checksum": update["original_checksum"],
