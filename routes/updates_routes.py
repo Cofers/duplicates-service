@@ -16,6 +16,9 @@ logging.basicConfig(
     stream=sys.stdout  # Use stdout instead of stderr for Cloud Run
 )
 
+
+BANKS_WHITELIST = ["bbva", "bbvaempresas", 'santander']
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -98,6 +101,12 @@ async def process_transaction_update(request: Request):
         # Work directly with the dictionary parsed from JSON
         transaction_dict = json.loads(decoded_message_str)
         logger.debug("Transaction dictionary to process: %s", transaction_dict)
+        
+        if transaction_dict["bank"] not in BANKS_WHITELIST:
+            return {
+                "processed_checksum": transaction_dict.get("checksum", "N/A"),
+                "updates": []
+            }
         
         updated_transactions = await update_detector.detect_updates(
             new_transaction=transaction_dict 
