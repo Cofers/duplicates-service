@@ -173,8 +173,8 @@ async def process_transaction_update(request: Request):
                         "reason": llm_result["reason"]
                     })
                     
-                    # Check if reason contains UPDATE and send to transaction-out-updates
-                    if "UPDATE" in llm_result["reason"].upper():
+                    # Check if classification contains UPDATE and send to transaction-out-updates
+                    if "UPDATE" in llm_result["classification"].upper():
                         update_pubsub_data = {
                             "old_checksum": update["original_checksum"],
                             "new_checksum": update["new_checksum"]
