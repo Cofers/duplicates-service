@@ -44,8 +44,15 @@ async def lifespan(app: FastAPI):
     logger.info(f"Attempting to connect to Redis at: {redis_url}")
     
     try:
-        # Create and connect Redis client
-        client = redis_async_pkg.from_url(redis_url, decode_responses=False)
+        # Create and connect Redis client with timeouts and retry settings
+        client = redis_async_pkg.from_url(
+            redis_url,
+            decode_responses=False,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+            retry_on_timeout=True,
+            health_check_interval=30
+        )
         await client.ping()  # Verify connection
         app.state.redis_client = client  # Save in app state
         logger.info("Successfully connected to Redis.")
