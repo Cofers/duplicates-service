@@ -183,7 +183,7 @@ async def process_transaction_update(request: Request):
                             "Sending update to Pub/Sub transaction-out-updates: %s",
                             update_pubsub_data
                         )
-                        publish_response(update_pubsub_data, "transaction-out-updates")
+                        publish_response(update_pubsub_data, "transactions-out-updates")
                     
                     # Send LLM result to llm-simility-responses
                     llm_pubsub_data = {
