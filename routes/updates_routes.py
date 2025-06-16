@@ -172,6 +172,22 @@ async def process_transaction_update(request: Request):
                         "classification": llm_result["classification"],
                         "reason": llm_result["reason"]
                     })
+                    # Send LLM result to llm-simility-responses
+                    llm_pubsub_data = {
+                        "original_checksum": update["original_checksum"],
+                        "new_checksum": update["new_checksum"],
+                        "classification": llm_result["classification"],
+                        "reason": llm_result["reason"],
+                        "company_id": transaction_dict["company_id"],
+                        "bank": transaction_dict["bank"],
+                        "account_number": transaction_dict["account_number"],
+                        "date": time.strftime("%Y-%m-%d")
+                    }
+                    logger.info(
+                        "Sending LLM result to Pub/Sub llm-simility-responses: %s",
+                        llm_pubsub_data
+                    )
+                    publish_response(llm_pubsub_data, "llm-simility-responses")
                     
                     # Check if classification contains UPDATE and send to transaction-out-updates
                     if "UPDATE" in llm_result["classification"].upper():
@@ -185,23 +201,7 @@ async def process_transaction_update(request: Request):
                         )
                         publish_response(update_pubsub_data, "transactions-out-updates")
                     
-                    # Send LLM result to llm-simility-responses
-                    llm_pubsub_data = {
-                        "original_checksum": update["original_checksum"],
-                        "new_checksum": update["new_checksum"],
-                        "classification": llm_result["classification"],
-                        "reason": llm_result["reason"],
-                        "company_id": transaction_dict["company_id"],
-                        "bank": transaction_dict["bank"],
-                        "account_number": transaction_dict["account_number"],
-                        "date": time.strftime("%Y-%m-%d")
-                    }
                     
-                    logger.info(
-                        "Sending LLM result to Pub/Sub llm-simility-responses: %s",
-                        llm_pubsub_data
-                    )
-                    publish_response(llm_pubsub_data, "llm-simility-responses")
                     
                 except Exception as e:
                     logger.error("Error calling LLM: %s", str(e))
