@@ -13,6 +13,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BANKS_WHITELIST = ["bbva", "bbvaempresas", 'santander']
+
 router = APIRouter()
 # Mosaic will be initialized with Redis client from request state
 mosaic = None
@@ -69,20 +71,16 @@ async def process_transaction_endpoint(request: Request):
             logger.error(f"Decoding error: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid data: {e}")
         
-        # --- TEMPORARY TEST DATA (REMOVE AFTER TESTING) ---
-        logger.warning("Using hardcoded test data for debugging purposes.")
-        current_transaction = {
-            "company_id": "ccee6737-6e3b-40ce-b7a0-016ec8e5d3c3",
-            "bank": "unalanapay",
-            "account_number": "653180003810259331",
-            "transaction_date": "2025-05-26",
-            "amount": -10000000.0,
-            "concept": "15 FACTURA ART",
-            "checksum": "681fea7810dc61776c21fa6zzaaazyyyyy",
-            "metadata": [{"key": "origin", "value": "syncfy"}],
-            "extraction_timestamp": time.time()
-        }
-        # --- END OF TEMPORARY TEST DATA ---
+        # Validate bank is in whitelist
+        if current_transaction.get("bank") not in BANKS_WHITELIST:
+            logger.info(
+                f"Bank {current_transaction.get('bank')} not in whitelist. "
+                f"Skipping processing."
+            )
+            return {
+                "status": "skipped_bank_not_whitelisted",
+                "details": f"Bank {current_transaction.get('bank')} not supported"
+            }
         
         logger.info(
             f"Processing tx: {current_transaction.get('checksum', 'N/A')}"
@@ -103,7 +101,8 @@ async def process_transaction_endpoint(request: Request):
             # as the "old" one for logging and analysis.
             checksum_old = "N/A"
             if conflicting_checksums and isinstance(conflicting_checksums, list):
-                if conflicting_checksums[0] and isinstance(conflicting_checksums[0], dict):
+                if (conflicting_checksums[0] and
+                    isinstance(conflicting_checksums[0], dict)):
                     checksum_old = conflicting_checksums[0].get("checksum", "N/A")
 
             # Send conflict to Pub/Sub for evaluation
@@ -116,7 +115,9 @@ async def process_transaction_endpoint(request: Request):
                 "date": current_transaction.get("transaction_date", "")
             }
             
-            logger.info(f"Sending duplicate conflict to Pub/Sub: {pubsub_data}")
+            logger.info(
+                f"Sending duplicate conflict to Pub/Sub: {pubsub_data}"
+            )
             publish_response(pubsub_data, "duplicate-transactions")
 
             # Return duplicate detected without LLM analysis for now
