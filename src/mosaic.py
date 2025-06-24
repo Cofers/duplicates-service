@@ -1,209 +1,272 @@
 # mosaic.py
-import hashlib
 import logging
-from typing import Dict, Any, Optional # List ya no es necesaria para la funcionalidad principal
+from typing import Dict, Any, Optional, List
+import math
+import re
+from redis import asyncio as redis_async_pkg
+import json
 
 # Asumimos que get_settings y Storage están definidos como en tu código original
 # y que Storage ahora usa un cliente Redis asíncrono (ej. aioredis)
-from src.core.config import get_settings # Asegúrate que esta ruta sea correcta
-from src.storage import Storage # Asegúrate que esta ruta sea correcta
+from src.core.config import get_settings  # Asegúrate que esta ruta sea correcta
+from src.storage import Storage  # Asegúrate que esta ruta sea correcta
 
 logger = logging.getLogger(__name__)
 
+
 class Mosaic:
-    def __init__(self):
-        self.storage = Storage()
+    def __init__(self, redis_client: redis_async_pkg.Redis = None):
         self.settings = get_settings()
         self.checksum_prefix = "duplicate_checksum_"
         
-        # TTL para el hash de checksums exactos: 15 días en segundos
-        # 15 días * 24 horas/día * 60 minutos/hora * 60 segundos/minuto = 1,296,000 segundos
-        self.exact_duplicate_ttl = getattr(self.settings, 'DUPLICATE_EXACT_TTL', 1296000) # Default a 15 días
+        # TTLs in seconds
+        self.EXACT_DUPLICATE_TTL = 432000  # 5 days
+        self.SIMILAR_DUPLICATE_TTL = 432000  # 5 days
+        self.UPDATE_DUPLICATE_TTL = 432000  # 5 days
+        
+        # Use provided Redis client or create new one
+        if redis_client:
+            self.redis_client = redis_client
+            # Create storage with the provided client
+            self.storage = Storage()
+            self.storage.client = redis_client
+        else:
+            # Fallback to creating new storage (for backward compatibility)
+            self.storage = Storage()
+            self.redis_client = self.storage.client
+
+    def _format_field_for_key(self, value: Any) -> str:
+        """Formats a field for use in a Redis key."""
+        if value is None:
+            return "null"
+        if isinstance(value, (int, float)):
+            # For numbers, we use a fixed precision
+            return f"{value:.2f}"
+        if isinstance(value, str):
+            # For strings, we remove spaces and convert to lowercase
+            return re.sub(r'\s+', '', value.lower())
+        if isinstance(value, list):
+            # For lists, we concatenate their formatted items
+            return "_".join(self._format_field_for_key(item) for item in value)
+        if isinstance(value, dict):
+            # For dictionaries, we concatenate their formatted values
+            return "_".join(self._format_field_for_key(v) for v in value.values())
+        return str(value)
+
+    def _serialize_metadata_for_key(
+        self, metadata: List[Dict[str, str]]
+    ) -> str:
+        """Serializes metadata for use in a Redis key."""
+        if not metadata:
+            return "no_metadata"
+        # We sort metadata by key to ensure consistency
+        sorted_metadata = sorted(metadata, key=lambda item: item.get("key", ""))
+        # We concatenate the key and value of each metadata item
+        return "_".join(
+            f"{m.get('key', '')}:{m.get('value', '')}" for m in sorted_metadata
+        )
+
+    def custom_is_na(self, value: Any) -> bool:
+        """Checks if a value is null or empty."""
+        if value is None:
+            return True
+        if isinstance(value, (str, list, dict)) and not value:
+            return True
+        if isinstance(value, (int, float)) and math.isnan(value):
+            return True
+        return False
 
     def _normalize_concept(self, concept: str) -> str:
-        concept_str = str(concept) # Asegurar que es string
-        concept_str = ' '.join(concept_str.split())
+        concept_str = str(concept)
         concept_str = concept_str.lower()
-        concept_str = ''.join(c for c in concept_str if c.isalnum() or c.isspace())
+        concept_str = ''.join(
+            c for c in concept_str if c.isalnum() or c.isspace()
+        )
+        concept_str = concept_str.replace(' ', '')
         return concept_str
 
     def _serialize_metadata(self, metadata: Any) -> str:
         if not metadata:
             return ''
         if isinstance(metadata, dict):
-            # Ordenar por clave para consistencia
-            values = [f"{k}{v}" for k, v in sorted(metadata.items()) if isinstance(v, (str, int, float, bool))]
+            # Sort by key for consistency
+            items = sorted(metadata.items())
+            values = [
+                f"{k}{v}" for k, v in items
+                if isinstance(v, (str, int, float, bool))
+            ]
         elif isinstance(metadata, list):
             values = []
             temp_serialized_items = []
             for item in metadata:
                 if isinstance(item, dict):
-                    item_values = [f"{k}{v}" for k, v in sorted(item.items()) if isinstance(v, (str, int, float, bool))]
+                    item_values = [
+                        f"{k}{v}" for k, v in sorted(item.items())
+                        if isinstance(v, (str, int, float, bool))
+                    ]
                     temp_serialized_items.append('|'.join(item_values))
-                elif isinstance(item, (str, int, float, bool)): # Aceptar también tipos primitivos en la lista
+                elif isinstance(item, (str, int, float, bool)):
                     temp_serialized_items.append(str(item))
-            values = sorted(temp_serialized_items) # Ordenar las representaciones de string de los items
+            values = sorted(temp_serialized_items)
         else:
-            # Si no es ni dict ni list, intentar convertir a string directamente
-            # Podrías añadir más lógica aquí si esperas otros tipos complejos
             try:
                 return str(metadata)
-            except:
-                logger.warning(f"No se pudo serializar metadata de tipo {type(metadata)}")
+            except Exception:
+                logger.warning(
+                    f"Could not serialize metadata of type {type(metadata)}"
+                )
                 return ''
-        return '|'.join(values) # Unir los valores finales
-
+        return '|'.join(values)
 
     def generate_checksum(self, transaction: Dict[str, Any]) -> str:
-        concept_str = transaction.get('concept', '')
-        amount_val = transaction.get('amount', 0) # Mantener como número para hashing consistente si es float
+        """Generates a checksum for the transaction."""
+        # We extract the relevant fields
+        company_id = transaction.get("company_id", "")
+        bank = transaction.get("bank", "")
+        account_number = transaction.get("account_number", "")
+        concept = transaction.get("concept", "")
+        amount = transaction.get("amount", 0.0)
+        metadata = transaction.get("metadata", [])
         
-        concept = self._normalize_concept(concept_str)
-        # Convertir el monto a una representación string canónica, ej. con 2 decimales para floats
-        if isinstance(amount_val, float):
-            amount = f"{amount_val:.2f}" # Asegurar formato consistente para floats
-        else:
-            amount = str(amount_val)
-            
-        metadata = self._serialize_metadata(transaction.get('metadata'))
-        hash_input = f"{concept}{amount}{metadata}"
-        return hashlib.md5(hash_input.encode()).hexdigest()
+        # We generate the Redis key
+        redis_key = self._get_redis_key(
+            company_id, bank, account_number, concept, amount, metadata
+        )
+        
+        # The checksum is the Redis key
+        return redis_key
 
     def _get_redis_key(
-        self, company_id: str, bank: str, account_number: str
+        self, company_id: str, bank: str, account_number: str,
+        concept: str, amount: float, metadata: List[Dict[str, str]]
     ) -> str:
-        """Genera la clave de Redis para el HASH de checksums exactos."""
-        return f"{self.checksum_prefix}{company_id}:{bank}:{account_number}"
+        """Generates a unique Redis key based on the transaction fields."""
+        # We format each field for the key
+        formatted_company = self._format_field_for_key(company_id)
+        formatted_bank = self._format_field_for_key(bank)
+        formatted_account = self._format_field_for_key(account_number)
+        formatted_concept = self._normalize_concept(concept)
+        formatted_amount = self._format_field_for_key(amount)
+        formatted_metadata = self._serialize_metadata_for_key(metadata)
+        
+        # We build the key
+        return (
+            f"duplicate_checksum_{formatted_company}:{formatted_bank}:"
+            f"{formatted_account}:{formatted_concept}:{formatted_amount}:"
+            f"{formatted_metadata}"
+        )
 
     async def exists_checksum(
-        self, checksum: str, company_id: str, bank: str, account_number: str
+        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
     ) -> bool:
-        redis_key = self._get_redis_key(company_id, bank, account_number)
-        try:
-            return bool(await self.storage.client.hexists(redis_key, checksum))
-        except Exception as e:
-            logger.error(f"Error verificando checksum para clave {redis_key}, checksum {checksum}: {str(e)}", exc_info=True)
-            return False
+        """Checks if a checksum exists for the transaction."""
+        checksum = self.generate_checksum(transaction)
+        return await redis_client.exists(checksum) == 1
 
-    async def get_original_checksum_value( # Renombrado para claridad, obtiene el valor asociado al checksum
-        self, checksum_key_in_hash: str, company_id: str, bank: str, account_number: str
-    ) -> Optional[str]:
-        redis_key = self._get_redis_key(company_id, bank, account_number)
-        try:
-            # Este es el checksum de la transacción original (o su ID) que se guardó.
-            return await self.storage.client.hget(redis_key, checksum_key_in_hash)
-        except Exception as e:
-            logger.error(f"Error obteniendo valor de checksum original para clave {redis_key}, checksum_key_in_hash {checksum_key_in_hash}: {str(e)}", exc_info=True)
-            return None
+    async def get_original_checksum_value(
+        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
+    ) -> Optional[list]:
+        """
+        Gets the array of values stored in Redis for the transaction's key.
+        """
+        checksum = self.generate_checksum(transaction)
+        value = await redis_client.get(checksum)
+        if value is not None:
+            try:
+                return json.loads(value.decode('utf-8'))
+            except Exception:
+                logger.warning(
+                    "Could not deserialize Redis value for key "
+                    f"{checksum}"
+                )
+                return None
+        return None
 
     async def add_checksum(
-        self,
-        checksum_key_in_hash: str, # El checksum MD5 generado para la transacción actual
-        value_to_store: str,      # El identificador de la transacción actual (puede ser su propio checksum o un ID externo)
-        company_id: str,
-        bank: str,
-        account_number: str
-    ) -> bool:
-        redis_key = self._get_redis_key(company_id, bank, account_number)
+        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
+    ) -> list:
+        """
+        Adds an object (checksum, extraction_date, transaction_date)
+        to the array in Redis.
+        """
+        checksum_key = self.generate_checksum(transaction)
+        new_entry = {
+            "checksum": transaction.get("checksum"),
+            "extraction_date": transaction.get("extraction_timestamp"),
+            "transaction_date": transaction.get("transaction_date")
+        }
+        # Try to get the current array
+        value = await redis_client.get(checksum_key)
+        if value is not None:
+            try:
+                arr = json.loads(value.decode('utf-8'))
+            except Exception:
+                arr = []
+        else:
+            arr = []
+        # Add only if the checksum is not repeated
+        if not any(e['checksum'] == new_entry['checksum'] for e in arr):
+            arr.append(new_entry)
+        # Save the updated array
+        await redis_client.set(
+            checksum_key, json.dumps(arr), ex=self.EXACT_DUPLICATE_TTL
+        )
+        return arr
+
+    async def delete_checksum(self, checksum_key: str) -> bool:
+        """Deletes the checksum key from Redis for a given transaction."""
         try:
-            # Guardamos el checksum_key_in_hash como campo y value_to_store como su valor.
-            # Si otra transacción genera el mismo checksum_key_in_hash, hexists lo detectará.
-            # El value_to_store nos permite saber qué transacción original generó este checksum.
-            hset_result = await self.storage.client.hset(
-                redis_key,
-                checksum_key_in_hash, # El MD5 de la transacción actual es la "clave" dentro del hash
-                value_to_store        # El "valor" es el ID de la transacción actual (o su MD5 si no hay ID)
+            result = await self.redis_client.delete(checksum_key)
+            logger.info(
+                f"Deletion attempt for key: {checksum_key}. "
+                f"Keys deleted: {result}"
             )
-            operation_successful = isinstance(hset_result, int) 
-            
-            if operation_successful:
-                # Solo actualizamos el TTL si la operación HSET fue realmente una inserción o actualización.
-                # Si HSET devuelve 0 (campo ya existía y valor fue actualizado), o 1 (nuevo campo), está bien.
-                await self.storage.client.expire(redis_key, self.exact_duplicate_ttl)
-            else:
-                logger.warning(f"HSET para {redis_key} (checksum_key_in_hash: {checksum_key_in_hash}) devolvió un resultado inesperado: {hset_result}, considerándolo fallido.")
-            return operation_successful
+            return result > 0
         except Exception as e:
-            logger.error(f"Error en add_checksum para la clave Redis '{redis_key}', checksum_key_in_hash '{checksum_key_in_hash}': {str(e)}", exc_info=True)
+            logger.error(
+                f"Error deleting checksum key {checksum_key}: "
+                f"{str(e)}"
+            )
             return False
 
     async def process_transaction(
-        self,
-        transaction: Dict[str, Any]
+        self, transaction: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """
+        Processes a transaction and checks if it is a duplicate.
+        Returns the array of collisions if any.
+        """
         try:
-            company_id = transaction["company_id"]
-            bank = transaction["bank"]
-            account_number = transaction["account_number"]
-            # transaction_date ya no es necesario para la lógica simplificada,
-            # pero puede ser útil para logging o si se reintroduce alguna lógica temporal.
-            # Lo mantenemos por si la transacción en sí lo requiere para el checksum.
-            # transaction_concept = transaction.get('concept', '') # Usado en generate_checksum
-
-            # Validar si 'transaction_date' es relevante para el checksum o metadata.
-            # Si no, se puede omitir su verificación aquí.
-            # Por ahora, la quitamos de la validación estricta a menos que sea parte del checksum implícitamente.
-
-            # Este es el checksum MD5 generado para la transacción actual.
-            current_transaction_checksum_md5 = self.generate_checksum(transaction)
-            
-            result = {
+            generated_checksum = self.generate_checksum(transaction)
+            existing_arr = await self.get_original_checksum_value(
+                self.redis_client, transaction
+            )
+            if existing_arr:
+                # If it exists, we add the new one and return the updated array
+                arr = await self.add_checksum(self.redis_client, transaction)
+                logger.info(
+                    "Duplicate transaction detected. Current checksum: "
+                    f"{generated_checksum}. Array in Redis: {arr}"
+                )
+                return {
+                    "is_duplicate": True,
+                    "generated_checksum": generated_checksum,
+                    "conflicting_checksums": arr,
+                    "error": None
+                }
+            # If it does not exist, we create the array with the first object
+            arr = await self.add_checksum(self.redis_client, transaction)
+            return {
                 "is_duplicate": False,
-                "generated_checksum": current_transaction_checksum_md5, # Checksum de la TX actual
-                "conflicting_checksum": None, # Checksum/ID de la TX original con la que choca
+                "generated_checksum": generated_checksum,
+                "conflicting_checksums": None,
                 "error": None
             }
-
-            is_exact_duplicate = await self.exists_checksum(current_transaction_checksum_md5, company_id, bank, account_number)
-
-            if is_exact_duplicate:
-                result["is_duplicate"] = True
-                # Obtenemos el valor que se almacenó originalmente para este MD5.
-                # Este valor es el checksum (o ID) de la transacción que *ya está* en Redis.
-                stored_original_tx_identifier = await self.get_original_checksum_value(current_transaction_checksum_md5, company_id, bank, account_number)
-                result["conflicting_checksum"] = stored_original_tx_identifier
-                logger.info(f"Transacción duplicada detectada. Checksum actual: {current_transaction_checksum_md5}, Checksum en Redis (original): {stored_original_tx_identifier}")
-
-            else:
-                # La transacción no es un duplicado (según el MD5). La añadimos.
-                # El 'value_to_store' es un identificador de la transacción actual.
-                # Puede ser un ID único de la transacción si lo tiene, o su propio checksum MD5.
-                value_to_store_for_this_tx = transaction.get("checksum") # Asumimos que la TX puede tener un ID/checksum propio
-                if not value_to_store_for_this_tx: 
-                    value_to_store_for_this_tx = current_transaction_checksum_md5
-                
-                success_add_exact = await self.add_checksum(
-                    current_transaction_checksum_md5, # El MD5 de esta transacción es la clave en el HASH
-                    value_to_store_for_this_tx,       # El ID (o MD5) de esta transacción es el valor
-                    company_id,
-                    bank,
-                    account_number
-                )
-                
-                if not success_add_exact:
-                    error_msg = "Error añadiendo checksum a Redis."
-                    result["error"] = error_msg
-                    logger.error(f"Fallo al llamar a add_checksum para {current_transaction_checksum_md5} (compañía {company_id}).")
-                else:
-                    logger.info(f"Nuevo checksum {current_transaction_checksum_md5} (valor: {value_to_store_for_this_tx}) añadido para {company_id}:{bank}:{account_number}.")
-            
-            return result
-
-        except KeyError as e:
-            logger.error(f"Campo mandatorio faltante en la transacción: {str(e)}. Datos de la transacción: {transaction}", exc_info=True)
-            partial_checksum = None
-            try: partial_checksum = self.generate_checksum(transaction)
-            except: pass
-            return {
-                "is_duplicate": False, "generated_checksum": partial_checksum,
-                "conflicting_checksum": None, "error": f"Campo mandatorio faltante en la transacción: {str(e)}"
-            }
         except Exception as e:
-            logger.error(f"Error general procesando la transacción: {str(e)}. Datos de la transacción: {transaction}", exc_info=True)
-            generated_checksum_on_error = None
-            try: generated_checksum_on_error = self.generate_checksum(transaction)
-            except Exception: pass # Evitar error en cadena si la generación de checksum falla
+            logger.error(f"Error processing transaction: {str(e)}")
             return {
-                "is_duplicate": False, "generated_checksum": generated_checksum_on_error,
-                "conflicting_checksum": None, "error": f"Error general procesando la transacción: {str(e)}"
+                "is_duplicate": False,
+                "generated_checksum": None,
+                "conflicting_checksums": None,
+                "error": str(e)
             }

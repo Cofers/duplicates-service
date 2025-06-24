@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Redis Configuration
-    REDIS_HOST: str 
-    REDIS_PORT: int 
-    REDIS_DB: int 
+    REDIS_HOST: str = "127.0.0.1"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 2  # Changed to use database 2 by default
 
     # Google Cloud Configuration
-    GCP_PROJECT: str
+    GCP_PROJECT: str = "production-400914"
     
 
     # BigQuery Configuration
