@@ -120,6 +120,12 @@ class Mosaic:
 
     def generate_checksum(self, transaction: Dict[str, Any]) -> str:
         """Generates a checksum for the transaction."""
+        # Validate that transaction is a dictionary
+        if not isinstance(transaction, dict):
+            raise ValueError(
+                f"Transaction must be a dictionary, got {type(transaction)}"
+            )
+        
         # We extract the relevant fields
         company_id = transaction.get("company_id", "")
         bank = transaction.get("bank", "")
@@ -237,6 +243,22 @@ class Mosaic:
         Returns the array of collisions if any.
         """
         try:
+            # Validate that transaction is a dictionary
+            if not isinstance(transaction, dict):
+                logger.error(
+                    f"Transaction must be a dictionary, "
+                    f"got {type(transaction)}"
+                )
+                return {
+                    "is_duplicate": False,
+                    "generated_checksum": None,
+                    "conflicting_checksums": None,
+                    "error": (
+                        f"Transaction must be a dictionary, "
+                        f"got {type(transaction)}"
+                    )
+                }
+            
             generated_checksum = self.generate_checksum(transaction)
             existing_arr = await self.get_original_checksum_value(
                 self.redis_client, transaction

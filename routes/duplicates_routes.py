@@ -67,9 +67,21 @@ async def process_transaction_endpoint(request: Request):
             decoded_bytes = base64.b64decode(encoded_data_field)
             decoded_str = decoded_bytes.decode("utf-8").strip()
             current_transaction = json.loads(decoded_str)
+            print(current_transaction)
         except (base64.binascii.Error, json.JSONDecodeError) as e:
             logger.error(f"Decoding error: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid data: {e}")
+        
+        # Debug log to check transaction type and content
+        keys_info = (
+            list(current_transaction.keys())
+            if isinstance(current_transaction, dict)
+            else 'Not a dict'
+        )
+        logger.info(
+            f"Transaction type: {type(current_transaction)}, "
+            f"Transaction keys: {keys_info}"
+        )
         
         # Validate bank is in whitelist
         if current_transaction.get("bank") not in BANKS_WHITELIST:
@@ -79,7 +91,9 @@ async def process_transaction_endpoint(request: Request):
             )
             return {
                 "status": "skipped_bank_not_whitelisted",
-                "details": f"Bank {current_transaction.get('bank')} not supported"
+                "details": (
+                    f"Bank {current_transaction.get('bank')} not supported"
+                )
             }
         
         logger.info(
@@ -102,7 +116,7 @@ async def process_transaction_endpoint(request: Request):
             checksum_old = "N/A"
             if conflicting_checksums and isinstance(conflicting_checksums, list):
                 if (conflicting_checksums[0] and
-                    isinstance(conflicting_checksums[0], dict)):
+                        isinstance(conflicting_checksums[0], dict)):
                     checksum_old = conflicting_checksums[0].get("checksum", "N/A")
 
             # Send conflict to Pub/Sub for evaluation
