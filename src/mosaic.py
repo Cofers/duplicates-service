@@ -126,21 +126,47 @@ class Mosaic:
                 f"Transaction must be a dictionary, got {type(transaction)}"
             )
         
-        # We extract the relevant fields
-        company_id = transaction.get("company_id", "")
-        bank = transaction.get("bank", "")
-        account_number = transaction.get("account_number", "")
-        concept = transaction.get("concept", "")
-        amount = transaction.get("amount", 0.0)
-        metadata = transaction.get("metadata", [])
-        
-        # We generate the Redis key
-        redis_key = self._get_redis_key(
-            company_id, bank, account_number, concept, amount, metadata
-        )
-        
-        # The checksum is the Redis key
-        return redis_key
+        try:
+            # We extract the relevant fields
+            logger.debug(
+                f"Extracting fields from transaction: {transaction}"
+            )
+            company_id = transaction.get("company_id", "")
+            logger.debug(
+                f"company_id: {company_id} (type: {type(company_id)})"
+            )
+            
+            bank = transaction.get("bank", "")
+            logger.debug(
+                f"bank: {bank} (type: {type(bank)})"
+            )
+            
+            account_number = transaction.get("account_number", "")
+            logger.debug(
+                f"account_number: {account_number} (type: {type(account_number)})"
+            )
+            
+            concept = transaction.get("concept", "")
+            logger.debug(f"concept: {concept} (type: {type(concept)})")
+            
+            amount = transaction.get("amount", 0.0)
+            logger.debug(f"amount: {amount} (type: {type(amount)})")
+            
+            metadata = transaction.get("metadata", [])
+            logger.debug(f"metadata: {metadata} (type: {type(metadata)})")
+            
+            # We generate the Redis key
+            redis_key = self._get_redis_key(
+                company_id, bank, account_number, concept, amount, metadata
+            )
+            logger.debug(f"Generated Redis key: {redis_key}")
+            
+            # The checksum is the Redis key
+            return redis_key
+        except Exception as e:
+            logger.error(f"Error in generate_checksum: {str(e)}")
+            logger.error(f"Transaction data: {transaction}")
+            raise
 
     def _get_redis_key(
         self, company_id: str, bank: str, account_number: str,
