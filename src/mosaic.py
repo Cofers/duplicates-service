@@ -57,14 +57,34 @@ class Mosaic:
         self, metadata: List[Dict[str, str]]
     ) -> str:
         """Serializes metadata for use in a Redis key."""
-        if not metadata:
-            return "no_metadata"
-        # We sort metadata by key to ensure consistency
-        sorted_metadata = sorted(metadata, key=lambda item: item.get("key", ""))
-        # We concatenate the key and value of each metadata item
-        return "_".join(
-            f"{m.get('key', '')}:{m.get('value', '')}" for m in sorted_metadata
-        )
+        if not metadata or not isinstance(metadata, list):
+            return "N/A"
+
+        serialized_parts = []
+        try:
+            for item in metadata:
+                if isinstance(item, dict) and 'key' in item and 'value' in item:
+                    key_str = str(item['key'])
+                    value_str = str(item['value'])
+                    serialized_parts.append(key_str + value_str)
+                else:
+                    logger.warning(
+                        f"Metadata item does not have the expected format "
+                        f"{{'key':k, 'value':v}}: {item}. Using 'invalid_metadata_item'."
+                    )
+                    return "invalid_metadata_structure"
+
+            if not serialized_parts:
+                return "N/A"
+
+            return "".join(serialized_parts)
+        except Exception as e:
+            logger.error(
+                f"Error during simple metadata serialization "
+                f"(type: {type(metadata)}): {e}",
+                exc_info=True
+            )
+            return "serialization_error"
 
     def custom_is_na(self, value: Any) -> bool:
         """Checks if a value is null or empty."""
@@ -127,33 +147,51 @@ class Mosaic:
             )
         
         try:
-            # We extract the relevant fields
+            # We extract the relevant fields using direct access like in 
+            # transaction_update_detector
             logger.debug(
                 f"Extracting fields from transaction: {transaction}"
             )
-            company_id = transaction.get("company_id", "")
+            company_id = transaction['company_id']
             logger.debug(
-                f"company_id: {company_id} (type: {type(company_id)})"
+                f"company_id: {company_id} "
+                f"(type: {type(company_id)})"
             )
             
-            bank = transaction.get("bank", "")
+            bank = transaction['bank']
             logger.debug(
-                f"bank: {bank} (type: {type(bank)})"
+                f"bank: {bank} "
+                f"(type: {type(bank)})"
             )
             
-            account_number = transaction.get("account_number", "")
+            account_number = transaction['account_number']
             logger.debug(
-                f"account_number: {account_number} (type: {type(account_number)})"
+                f"account_number: {account_number} "
+                f"(type: {type(account_number)})"
             )
             
-            concept = transaction.get("concept", "")
-            logger.debug(f"concept: {concept} (type: {type(concept)})")
+            concept = transaction.get('concept', '')
+            logger.debug(
+                f"concept: {concept} "
+                f"(type: {type(concept)})"
+            )
             
-            amount = transaction.get("amount", 0.0)
-            logger.debug(f"amount: {amount} (type: {type(amount)})")
+            amount = transaction['amount']
+            logger.debug(
+                f"amount: {amount} "
+                f"(type: {type(amount)})"
+            )
             
-            metadata = transaction.get("metadata", [])
-            logger.debug(f"metadata: {metadata} (type: {type(metadata)})")
+            metadata = transaction.get('metadata', [])
+            logger.debug(
+                f"metadata: {metadata} "
+                f"(type: {type(metadata)})"
+            )
+            
+            # Convert metadata to list if it's a dict (like in transaction_update_detector)
+            if isinstance(metadata, dict):
+                metadata = [metadata]
+                logger.debug(f"Converted metadata to list: {metadata}")
             
             # We generate the Redis key
             redis_key = self._get_redis_key(
