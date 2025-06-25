@@ -1,6 +1,5 @@
 import base64
 import json
-import time
 import logging
 from fastapi import APIRouter, HTTPException, Request
 from src.mosaic import Mosaic
@@ -66,47 +65,47 @@ async def process_transaction_endpoint(request: Request):
         try:
             decoded_bytes = base64.b64decode(encoded_data_field)
             decoded_str = decoded_bytes.decode("utf-8").strip()
-            current_transaction = json.loads(decoded_str)
-            print(current_transaction)
+            transaction_dict = json.loads(decoded_str)
+            print(transaction_dict)
         except (base64.binascii.Error, json.JSONDecodeError) as e:
             logger.error(f"Decoding error: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid data: {e}")
         
         # Debug log to check transaction type and content
         keys_info = (
-            list(current_transaction.keys())
-            if isinstance(current_transaction, dict)
+            list(transaction_dict.keys())
+            if isinstance(transaction_dict, dict)
             else 'Not a dict'
         )
         logger.info(
-            f"Transaction type: {type(current_transaction)}, "
+            f"Transaction type: {type(transaction_dict)}, "
             f"Transaction keys: {keys_info}"
         )
         
         # Validate bank is in whitelist
-        if current_transaction.get("bank") not in BANKS_WHITELIST:
+        if transaction_dict["bank"] not in BANKS_WHITELIST:
             logger.info(
-                f"Bank {current_transaction.get('bank')} not in whitelist. "
+                f"Bank {transaction_dict['bank']} not in whitelist. "
                 f"Skipping processing."
             )
             return {
                 "status": "skipped_bank_not_whitelisted",
                 "details": (
-                    f"Bank {current_transaction.get('bank')} not supported"
+                    f"Bank {transaction_dict['bank']} not supported"
                 )
             }
         
         logger.info(
-            f"Processing tx: {current_transaction.get('checksum', 'N/A')}"
+            f"Processing tx: {transaction_dict.get('checksum', 'N/A')}"
         )
         
-        mosaic_result = await mosaic.process_transaction(current_transaction)
+        mosaic_result = await mosaic.process_transaction(transaction_dict)
         logger.info(f"Mosaic processing result: {mosaic_result}")
 
         if mosaic_result.get("is_duplicate"):
             logger.info("Duplicate detected by Mosaic. Sending to Pub/Sub.")
             
-            checksum_new = current_transaction.get("checksum", "")
+            checksum_new = transaction_dict.get("checksum", "")
             # The key that caused the collision is the one we generated
             colliding_key = mosaic_result.get("generated_checksum")
             conflicting_checksums = mosaic_result.get("conflicting_checksums", [])
@@ -123,10 +122,10 @@ async def process_transaction_endpoint(request: Request):
             pubsub_data = {
                 "checksum_old": checksum_old,
                 "checksum_new": checksum_new,
-                "account_number": current_transaction.get("account_number", ""),
-                "bank": current_transaction.get("bank", ""),
-                "company_id": current_transaction.get("company_id", ""),
-                "date": current_transaction.get("transaction_date", "")
+                "account_number": transaction_dict["account_number"],
+                "bank": transaction_dict["bank"],
+                "company_id": transaction_dict["company_id"],
+                "date": transaction_dict.get("transaction_date", "")
             }
             
             logger.info(
@@ -146,8 +145,8 @@ async def process_transaction_endpoint(request: Request):
             message_for_llm = (
                 f"Analyze potential duplicate: new_tx_id='{checksum_new}', "
                 f"conflicts_with_tx_id='{checksum_old}'. "
-                f"Bank: {current_transaction.get('bank')}, "
-                f"Company: {current_transaction.get('company_id')}. "
+                f"Bank: {transaction_dict['bank']}, "
+                f"Company: {transaction_dict['company_id']}. "
                 "Is this a transaction update/rectification?"
             )
             print(message_for_llm)
@@ -165,7 +164,8 @@ async def process_transaction_endpoint(request: Request):
             # We assume the LLM classifies updates with "update"
             if llm_result.get("classification") == "update":
                 logger.info(
-                    "LLM classified as 'update'. Deleting original checksum key."
+                    "LLM classified as 'update'. "
+                    "Deleting original checksum key."
                 )
                 delete_success = await mosaic.delete_checksum(colliding_key)
                 logger.info(
@@ -176,11 +176,13 @@ async def process_transaction_endpoint(request: Request):
                 # Publish detailed result to Pub/Sub
                 pubsub_data = {
                     "status": "update_processed",
-                    "company_id": current_transaction.get("company_id"),
+                    "company_id": transaction_dict['company_id'],
                     "checksum_new": checksum_new,
                     "checksum_old_deleted": checksum_old,
                     "llm_classification": llm_result,
-                    "detection_timestamp_utc": datetime.datetime.utcnow().isoformat()
+                    "detection_timestamp_utc": (
+                        datetime.datetime.utcnow().isoformat()
+                    )
                 }
                 #publish_response(pubsub_data, "duplicate-transactions")
 
@@ -195,11 +197,13 @@ async def process_transaction_endpoint(request: Request):
             # If not an update, treat as a regular duplicate
             pubsub_data = {
                 "status": "duplicate_detected",
-                "company_id": current_transaction.get("company_id"),
+                "company_id": transaction_dict['company_id'],
                 "checksum_new": checksum_new,
                 "checksum_old": checksum_old,
                 "llm_classification": llm_result,
-                "detection_timestamp_utc": datetime.datetime.utcnow().isoformat()
+                "detection_timestamp_utc": (
+                    datetime.datetime.utcnow().isoformat()
+                )
             }
             publish_response(pubsub_data, "duplicate-transactions")
 
