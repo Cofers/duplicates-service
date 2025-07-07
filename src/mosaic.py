@@ -1,358 +1,240 @@
-# mosaic.py
 import logging
 from typing import Dict, Any, Optional, List
-import math
 import re
 from redis import asyncio as redis_async_pkg
 import json
+from datetime import datetime, timedelta
+import jellyfish
 
-# Asumimos que get_settings y Storage están definidos como en tu código original
-# y que Storage ahora usa un cliente Redis asíncrono (ej. aioredis)
-from src.core.config import get_settings  # Asegúrate que esta ruta sea correcta
-from src.storage import Storage  # Asegúrate que esta ruta sea correcta
+from src.core.config import get_settings
+from src.storage import Storage
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("mosaic")
 
 
 class Mosaic:
     def __init__(self, redis_client: redis_async_pkg.Redis = None):
         self.settings = get_settings()
-        self.checksum_prefix = "duplicate_checksum_"
-        
-        # TTLs in seconds
-        self.EXACT_DUPLICATE_TTL = 432000  # 5 days
-        self.SIMILAR_DUPLICATE_TTL = 432000  # 5 days
-        self.UPDATE_DUPLICATE_TTL = 432000  # 5 days
-        
-        # Use provided Redis client or create new one
+        self.daily_transactions_prefix = "daily_tx_list_"
+        self.DAILY_TX_LIST_TTL = 7 * 24 * 3600
+        # Lazy initialization - don't load the model until needed
+        self._embedding_model = None
+
         if redis_client:
             self.redis_client = redis_client
-            # Create storage with the provided client
             self.storage = Storage()
             self.storage.client = redis_client
         else:
-            # Fallback to creating new storage (for backward compatibility)
             self.storage = Storage()
             self.redis_client = self.storage.client
 
+    @property
+    def embedding_model(self):
+        """Lazy load the embedding model only when needed"""
+        if self._embedding_model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("SentenceTransformer model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load SentenceTransformer model: {e}")
+                raise
+        return self._embedding_model
+
     def _format_field_for_key(self, value: Any) -> str:
-        """Formats a field for use in a Redis key."""
         if value is None:
             return "null"
         if isinstance(value, (int, float)):
-            # For numbers, we use a fixed precision
             return f"{value:.2f}"
         if isinstance(value, str):
-            # For strings, we remove spaces and convert to lowercase
             return re.sub(r'\s+', '', value.lower())
         if isinstance(value, list):
-            # For lists, we concatenate their formatted items
             return "_".join(self._format_field_for_key(item) for item in value)
         if isinstance(value, dict):
-            # For dictionaries, we concatenate their formatted values
             return "_".join(self._format_field_for_key(v) for v in value.values())
         return str(value)
 
-    def _serialize_metadata_for_key(
-        self, metadata: List[Dict[str, str]]
-    ) -> str:
-        """Serializes metadata for use in a Redis key."""
-        if not metadata or not isinstance(metadata, list):
-            return "N/A"
-
-        serialized_parts = []
-        try:
-            for item in metadata:
-                if isinstance(item, dict) and 'key' in item and 'value' in item:
-                    key_str = str(item['key'])
-                    value_str = str(item['value'])
-                    serialized_parts.append(key_str + value_str)
-                else:
-                    logger.warning(
-                        f"Metadata item does not have the expected format "
-                        f"{{'key':k, 'value':v}}: {item}. Using 'invalid_metadata_item'."
-                    )
-                    return "invalid_metadata_structure"
-
-            if not serialized_parts:
-                return "N/A"
-
-            return "".join(serialized_parts)
-        except Exception as e:
-            logger.error(
-                f"Error during simple metadata serialization "
-                f"(type: {type(metadata)}): {e}",
-                exc_info=True
-            )
-            return "serialization_error"
-
-    def custom_is_na(self, value: Any) -> bool:
-        """Checks if a value is null or empty."""
-        if value is None:
-            return True
-        if isinstance(value, (str, list, dict)) and not value:
-            return True
-        if isinstance(value, (int, float)) and math.isnan(value):
-            return True
-        return False
-
     def _normalize_concept(self, concept: str) -> str:
-        concept_str = str(concept)
-        concept_str = concept_str.lower()
-        concept_str = ''.join(
-            c for c in concept_str if c.isalnum() or c.isspace()
-        )
-        concept_str = concept_str.replace(' ', '')
-        return concept_str
+        concept_str = str(concept).lower()
+        concept_str = ''.join(c for c in concept_str if c.isalnum() or c.isspace())
+        return concept_str.strip()
 
-    def _serialize_metadata(self, metadata: Any) -> str:
-        if not metadata:
-            return ''
-        if isinstance(metadata, dict):
-            # Sort by key for consistency
-            items = sorted(metadata.items())
-            values = [
-                f"{k}{v}" for k, v in items
-                if isinstance(v, (str, int, float, bool))
-            ]
-        elif isinstance(metadata, list):
-            values = []
-            temp_serialized_items = []
-            for item in metadata:
-                if isinstance(item, dict):
-                    item_values = [
-                        f"{k}{v}" for k, v in sorted(item.items())
-                        if isinstance(v, (str, int, float, bool))
-                    ]
-                    temp_serialized_items.append('|'.join(item_values))
-                elif isinstance(item, (str, int, float, bool)):
-                    temp_serialized_items.append(str(item))
-            values = sorted(temp_serialized_items)
-        else:
-            try:
-                return str(metadata)
-            except Exception:
-                logger.warning(
-                    f"Could not serialize metadata of type {type(metadata)}"
-                )
-                return ''
-        return '|'.join(values)
+    def _get_daily_redis_key(self, company_id: str, bank: str, account_number: str, transaction_date: str) -> str:
+        return f"{self.daily_transactions_prefix}{self._format_field_for_key(company_id)}:{self._format_field_for_key(bank)}:{self._format_field_for_key(account_number)}:{self._format_field_for_key(transaction_date)}"
 
-    def generate_checksum(self, transaction: Dict[str, Any]) -> str:
-        """Generates a checksum for the transaction."""
-        # Validate that transaction is a dictionary
-        if not isinstance(transaction, dict):
-            raise ValueError(
-                f"Transaction must be a dictionary, got {type(transaction)}"
-            )
-        
-        try:
-            # We extract the relevant fields using direct access like in 
-            # transaction_update_detector
-            logger.debug(
-                f"Extracting fields from transaction: {transaction}"
-            )
-            company_id = transaction['company_id']
-            logger.debug(
-                f"company_id: {company_id} "
-                f"(type: {type(company_id)})"
-            )
-            
-            bank = transaction['bank']
-            logger.debug(
-                f"bank: {bank} "
-                f"(type: {type(bank)})"
-            )
-            
-            account_number = transaction['account_number']
-            logger.debug(
-                f"account_number: {account_number} "
-                f"(type: {type(account_number)})"
-            )
-            
-            concept = transaction.get('concept', '')
-            logger.debug(
-                f"concept: {concept} "
-                f"(type: {type(concept)})"
-            )
-            
-            amount = transaction['amount']
-            logger.debug(
-                f"amount: {amount} "
-                f"(type: {type(amount)})"
-            )
-            
-            metadata = transaction.get('metadata', [])
-            logger.debug(
-                f"metadata: {metadata} "
-                f"(type: {type(metadata)})"
-            )
-            
-            # Convert metadata to list if it's a dict (like in transaction_update_detector)
-            if isinstance(metadata, dict):
-                metadata = [metadata]
-                logger.debug(f"Converted metadata to list: {metadata}")
-            
-            # We generate the Redis key
-            redis_key = self._get_redis_key(
-                company_id, bank, account_number, concept, amount, metadata
-            )
-            logger.debug(f"Generated Redis key: {redis_key}")
-            
-            # The checksum is the Redis key
-            return redis_key
-        except Exception as e:
-            logger.error(f"Error in generate_checksum: {str(e)}")
-            logger.error(f"Transaction data: {transaction}")
-            raise
-
-    def _get_redis_key(
-        self, company_id: str, bank: str, account_number: str,
-        concept: str, amount: float, metadata: List[Dict[str, str]]
-    ) -> str:
-        """Generates a unique Redis key based on the transaction fields."""
-        # We format each field for the key
-        formatted_company = self._format_field_for_key(company_id)
-        formatted_bank = self._format_field_for_key(bank)
-        formatted_account = self._format_field_for_key(account_number)
-        formatted_concept = self._normalize_concept(concept)
-        formatted_amount = self._format_field_for_key(amount)
-        formatted_metadata = self._serialize_metadata_for_key(metadata)
-        
-        # We build the key
-        return (
-            f"duplicate_checksum_{formatted_company}:{formatted_bank}:"
-            f"{formatted_account}:{formatted_concept}:{formatted_amount}:"
-            f"{formatted_metadata}"
-        )
-
-    async def exists_checksum(
-        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
-    ) -> bool:
-        """Checks if a checksum exists for the transaction."""
-        checksum = self.generate_checksum(transaction)
-        return await redis_client.exists(checksum) == 1
-
-    async def get_original_checksum_value(
-        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
-    ) -> Optional[list]:
-        """
-        Gets the array of values stored in Redis for the transaction's key.
-        """
-        checksum = self.generate_checksum(transaction)
-        value = await redis_client.get(checksum)
+    async def get_transactions_for_day(self, redis_client: redis_async_pkg.Redis, company_id: str, bank: str, account_number: str, transaction_date: str) -> List[Dict[str, Any]]:
+        daily_key = self._get_daily_redis_key(company_id, bank, account_number, transaction_date)
+        value = await redis_client.get(daily_key)
         if value is not None:
             try:
                 return json.loads(value.decode('utf-8'))
-            except Exception:
-                logger.warning(
-                    "Could not deserialize Redis value for key "
-                    f"{checksum}"
-                )
-                return None
-        return None
+            except Exception as e:
+                logger.warning(f"Error decoding Redis value for key {daily_key}: {e}")
+                return []
+        return []
 
-    async def add_checksum(
-        self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]
-    ) -> list:
-        """
-        Adds an object (checksum, extraction_date, transaction_date)
-        to the array in Redis.
-        """
-        checksum_key = self.generate_checksum(transaction)
-        new_entry = {
-            "checksum": transaction.get("checksum"),
-            "extraction_date": transaction.get("extraction_timestamp"),
-            "transaction_date": transaction.get("transaction_date")
-        }
-        # Try to get the current array
-        value = await redis_client.get(checksum_key)
-        if value is not None:
-            try:
-                arr = json.loads(value.decode('utf-8'))
-            except Exception:
-                arr = []
-        else:
-            arr = []
-        # Add only if the checksum is not repeated
-        if not any(e['checksum'] == new_entry['checksum'] for e in arr):
-            arr.append(new_entry)
-        # Save the updated array
-        await redis_client.set(
-            checksum_key, json.dumps(arr), ex=self.EXACT_DUPLICATE_TTL
-        )
-        return arr
-
-    async def delete_checksum(self, checksum_key: str) -> bool:
-        """Deletes the checksum key from Redis for a given transaction."""
+    def compute_concept_embedding(self, concept: str) -> List[float]:
         try:
-            result = await self.redis_client.delete(checksum_key)
-            logger.info(
-                f"Deletion attempt for key: {checksum_key}. "
-                f"Keys deleted: {result}"
-            )
-            return result > 0
+            return self.embedding_model.encode(concept).tolist()
         except Exception as e:
-            logger.error(
-                f"Error deleting checksum key {checksum_key}: "
-                f"{str(e)}"
-            )
+            logger.error(f"Failed to compute embedding for concept '{concept}': {e}", exc_info=True)
+            return []
+
+    def _is_similar_concept(self, concept1: str, concept2: str, threshold: float = 0.75, emb1: Optional[List[float]] = None, emb2: Optional[List[float]] = None) -> bool:
+        if not concept1 or not concept2:
             return False
 
-    async def process_transaction(
-        self, transaction: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Processes a transaction and checks if it is a duplicate.
-        Returns the array of collisions if any.
-        """
+        concept1_norm = self._normalize_concept(concept1)
+        concept2_norm = self._normalize_concept(concept2)
+
+        if concept1_norm in concept2_norm or concept2_norm in concept1_norm:
+            logger.info(f"[SUBSTRING MATCH] '{concept1_norm}' ⊂ '{concept2_norm}' or vice versa → match aceptado")
+            return True
+
+        jw_score = jellyfish.jaro_winkler_similarity(concept1_norm, concept2_norm)
+        if jw_score > 0.93:
+            logger.info(f"[JARO-WINKLER] Score {jw_score:.4f} between '{concept1_norm}' and '{concept2_norm}' → match")
+            return True
+
         try:
-            # Validate that transaction is a dictionary
-            if not isinstance(transaction, dict):
-                logger.error(
-                    f"Transaction must be a dictionary, "
-                    f"got {type(transaction)}"
-                )
-                return {
-                    "is_duplicate": False,
-                    "generated_checksum": None,
-                    "conflicting_checksums": None,
-                    "error": (
-                        f"Transaction must be a dictionary, "
-                        f"got {type(transaction)}"
-                    )
-                }
+            if emb1 is None:
+                emb1 = self.compute_concept_embedding(concept1)
+            if emb2 is None or not isinstance(emb2, list):
+                emb2 = self.compute_concept_embedding(concept2)
             
-            generated_checksum = self.generate_checksum(transaction)
-            existing_arr = await self.get_original_checksum_value(
-                self.redis_client, transaction
-            )
-            if existing_arr:
-                # If it exists, we add the new one and return the updated array
-                arr = await self.add_checksum(self.redis_client, transaction)
-                logger.info(
-                    "Duplicate transaction detected. Current checksum: "
-                    f"{generated_checksum}. Array in Redis: {arr}"
-                )
-                return {
-                    "is_duplicate": True,
-                    "generated_checksum": generated_checksum,
-                    "conflicting_checksums": arr,
-                    "error": None
-                }
-            # If it does not exist, we create the array with the first object
-            arr = await self.add_checksum(self.redis_client, transaction)
+            # Lazy import of torch and util
+            import torch
+            from sentence_transformers import util
+            
+            similarity = util.cos_sim(torch.tensor(emb1).unsqueeze(0), torch.tensor(emb2).unsqueeze(0)).item()
+            logger.info(f"[SIMILARITY] '{concept1}' vs '{concept2}' => score: {similarity:.4f}, threshold: {threshold}")
+            return similarity >= threshold
+        except Exception as e:
+            logger.error(f"Error computing embedding similarity: {e}", exc_info=True)
+            return False
+
+    def _is_similar_amount_decimal(self, amount1: float, amount2: float, threshold: float = 0.5) -> bool:
+        if amount1 is None or amount2 is None:
+            return False
+        int1 = int(abs(amount1))
+        int2 = int(abs(amount2))
+        match = int1 == int2
+        delta = abs(amount1 - amount2)
+        logger.info(f"[DECIMAL MATCH] amount1={amount1}, amount2={amount2}, int_match={match}, delta={delta}")
+        return match and delta <= threshold
+
+    async def add_transaction_to_daily_list(self, redis_client: redis_async_pkg.Redis, transaction: Dict[str, Any]) -> None:
+        key = self._get_daily_redis_key(transaction['company_id'], transaction['bank'], transaction['account_number'], transaction['transaction_date'])
+        tx_list = await self.get_transactions_for_day(redis_client, transaction['company_id'], transaction['bank'], transaction['account_number'], transaction['transaction_date'])
+        tx_list.append({
+            'checksum': transaction['checksum'],
+            'concept': transaction['concept'],
+            'amount': transaction['amount'],
+            'transaction_date': transaction['transaction_date'],
+            'extraction_date': transaction['extraction_date'],
+        })
+        await redis_client.set(key, json.dumps(tx_list), ex=self.DAILY_TX_LIST_TTL)
+        logger.info(f"Added new transaction to daily list for key: {key}. New list size: {len(tx_list)}")
+
+    async def get_transactions_last_days(self, company_id: str, bank: str, account_number: str, current_date: str, days_back: int = 3) -> List[Dict[str, Any]]:
+        all_txs = []
+        current_date_obj = datetime.strptime(current_date, "%Y-%m-%d")
+        for i in range(1, days_back + 1):
+            prev_date = (current_date_obj - timedelta(days=i)).strftime("%Y-%m-%d")
+            txs = await self.get_transactions_for_day(self.redis_client, company_id, bank, account_number, prev_date)
+            logger.info(f"Found {len(txs)} transactions on day {prev_date} (within lookback for date change rule)")
+            all_txs.extend(txs)
+        return all_txs
+
+    async def process_transaction(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            company_id = transaction['company_id']
+            bank = transaction['bank']
+            account_number = transaction['account_number']
+            transaction_date = transaction['transaction_date']
+            extraction_date = transaction['extraction_date']
+            checksum = transaction['checksum']
+            amount = transaction['amount']
+            concept = transaction['concept']
+
+            logger.info(f"Processing transaction {checksum} on {transaction_date} (extraction: {extraction_date})")
+
+            txs_same_day = await self.get_transactions_for_day(self.redis_client, company_id, bank, account_number, transaction_date)
+            logger.info(f"Found {len(txs_same_day)} transactions on same day")
+
+            for existing in txs_same_day:
+                if existing['checksum'] == checksum:
+                    logger.info(f"Same checksum {checksum} already stored, skipping")
+                    return {
+                        "status": "no_conflict",
+                        "reason": "same_checksum_ignore",
+                        "provided_checksum": checksum,
+                        "conflicts": [],
+                        "error": None
+                    }
+
+            for existing in txs_same_day:
+                if existing['extraction_date'] >= extraction_date:
+                    continue
+
+                amount_match = amount == existing['amount']
+                logger.info(f"Comparando amount={amount} con {existing['amount']}")
+                logger.info(f"Resultado comparación: amount_match={amount_match}")
+
+                if amount_match:
+                    if self._is_similar_concept(concept, existing['concept']):
+                        logger.info(f"[REGLA 1] Detected enriched_concept vs tx {existing['checksum']}")
+                        return {
+                            "status": "conflict",
+                            "reason": "enriched_concept",
+                            "provided_checksum": checksum,
+                            "conflicts": [existing['checksum']],
+                            "error": None
+                        }
+
+                if self._is_similar_amount_decimal(amount, existing['amount']):
+                    if self._is_similar_concept(concept, existing['concept']):
+                        logger.info(f"[REGLA 2] Detected concept+amount (decimals) update vs tx {existing['checksum']}")
+                        return {
+                            "status": "conflict",
+                            "reason": "concept_amount_update",
+                            "provided_checksum": checksum,
+                            "conflicts": [existing['checksum']],
+                            "error": None
+                        }
+
+            # REGLA 3: Buscar en días anteriores
+            txs_past_days = await self.get_transactions_last_days(company_id, bank, account_number, transaction_date, days_back=3)
+            for existing in txs_past_days:
+                if existing['extraction_date'] >= extraction_date:
+                    continue
+                if amount == existing['amount'] and self._normalize_concept(concept) == self._normalize_concept(existing['concept']):
+                    logger.info(f"[REGLA 3] Detected date_correction vs tx {existing['checksum']}")
+                    return {
+                        "status": "conflict",
+                        "reason": "date_change_same_content",
+                        "provided_checksum": checksum,
+                        "conflicts": [existing['checksum']],
+                        "error": None
+                    }
+
+            await self.add_transaction_to_daily_list(self.redis_client, transaction)
+            logger.info(f"No conflicts found for {checksum}, storing as new.")
+
             return {
-                "is_duplicate": False,
-                "generated_checksum": generated_checksum,
-                "conflicting_checksums": None,
+                "status": "no_conflict",
+                "reason": "new_transaction",
+                "provided_checksum": checksum,
+                "conflicts": [],
                 "error": None
             }
+
         except Exception as e:
-            logger.error(f"Error processing transaction: {str(e)}")
+            logger.error(f"Error in process_transaction: {e}", exc_info=True)
             return {
-                "is_duplicate": False,
-                "generated_checksum": None,
-                "conflicting_checksums": None,
+                "status": "error",
+                "reason": "exception",
+                "provided_checksum": transaction.get('checksum'),
+                "conflicts": [],
                 "error": str(e)
             }
