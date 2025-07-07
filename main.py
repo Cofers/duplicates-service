@@ -6,6 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager  # For lifespan
 from redis import asyncio as redis_async_pkg  # Async Redis client
 
+# Configure PyTorch to avoid MPS issues on macOS with Gunicorn
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+# Alternative: disable MPS entirely
+# os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
+
 # --- Module imports ---
 try:
     from src.transaction_update_detector import TransactionUpdateDetectorRedis
@@ -17,6 +22,7 @@ except ImportError as e:
     raise ImportError(f"Could not import required modules: {e}")
 
 from routes.duplicates_routes import router as duplicates_router
+from routes.analyze_routes import router as analyze_router
 
 # Basic logging configuration (can be made more advanced)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -123,6 +129,13 @@ app.include_router(
     updates_router,
     prefix="/transactions",
     tags=["updates"]
+)
+
+# Include analyze router
+app.include_router(
+    analyze_router,
+    prefix="/transactions",
+    tags=["analyze"]
 )
 
 
