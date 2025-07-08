@@ -6,6 +6,7 @@ from src.mosaic import Mosaic
 from src.llm_client import LLMClient
 from src.pubsub import publish_response
 from datetime import datetime # Import datetime for timestamp if needed, though not used in the final pubsub_data for now
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,10 +143,11 @@ async def process_transaction_endpoint(request: Request):
                 "account_number": transaction_dict.get("account_number", "N/A"),
                 "bank": transaction_dict.get("bank", "N/A"),
                 "company_id": transaction_dict.get("company_id", "N/A"),
-                "date": transaction_dict.get("transaction_date", "N/A"), # Transaction date of the new transaction
+                "transaction_date": transaction_dict.get("transaction_date", "N/A"), # Transaction date of the new transaction
                 "type_of_conflict": type_of_conflict, # The specific type of duplicate
                 "mosaic_reason": mosaic_reason, # Original reason from Mosaic for debugging/analysis
-                "conflicting_transactions_details": conflicting_transactions # Full details of conflicting transactions
+                "conflicting_transactions_details": conflicting_transactions, # Full details of conflicting transactions
+                "date": time.strftime("%Y-%m-%d")
             }
             
             logger.info(
@@ -176,7 +178,7 @@ async def process_transaction_endpoint(request: Request):
                 "error_message": mosaic_result.get("error"),
                 "mosaic_reason": mosaic_result.get("reason", "processing_error")
             }
-            publish_response(pubsub_data_error, "duplicate-transactions-errors") # Consider a separate topic for errors
+            #publish_response(pubsub_data_error, "duplicate-transactions-errors") # Consider a separate topic for errors
             
             return {
                 "status": "processing_error",
