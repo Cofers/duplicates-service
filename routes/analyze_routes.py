@@ -30,11 +30,11 @@ duplicates_llm_client = LLMClient(
 
 # Mapeo de razones de Mosaic a tipos de conflicto para Pub/Sub
 CONFLICT_TYPE_MAP = {
-    "exact_checksum_match_same_day": "EXACT",
-    "similar_match_same_day": "CONCEPT_IMPORT",
-    "cross_day_rectification": "DATE",
-    "processing_error": "ERROR",
-    "missing_fields": "ERROR" # O "MISSING_DATA" si prefieres ser más específico
+    "enriched_concept": "CONCEPT_IMPORT",
+    "concept_amount_update": "AMOUNT_UPDATE", 
+    "date_change_same_content": "DATE",
+    "exception": "ERROR",
+    "same_checksum_ignore": "EXACT"
 }
 
 
@@ -116,21 +116,25 @@ async def process_transaction_endpoint(request: Request):
         
         mosaic_result = await mosaic.process_transaction(transaction_dict)
         logger.info(f"Mosaic processing result: {mosaic_result}")
+        
+        # Debug: Check the status value
+        status_value = mosaic_result.get("status")
+        logger.info(f"Status value from mosaic_result: '{status_value}' (type: {type(status_value)})")
 
-        if mosaic_result.get("is_duplicate"):
-            logger.info("Duplicate detected by Mosaic. Sending to Pub/Sub.")
+        # Check if Mosaic detected a conflict (status != "no_conflict")
+        if status_value == "conflict":
+            logger.info("Conflict detected by Mosaic. Sending to Pub/Sub.")
             
             # The new checksum is the one provided in the incoming transaction
             checksum_new = provided_checksum
             
-            # conflicting_transactions now holds the list of full transaction objects
-            conflicting_transactions = mosaic_result.get("conflicting_transactions", [])
+            # Get the list of conflicting checksums from Mosaic result
+            conflicting_checksums = mosaic_result.get("conflicts", [])
             
-            # For simplicity, we take the checksum of the first conflicting transaction as "checksum_old"
+            # For simplicity, we take the first conflicting checksum as "checksum_old"
             checksum_old = "N/A"
-            if conflicting_transactions and isinstance(conflicting_transactions, list):
-                if conflicting_transactions[0] and isinstance(conflicting_transactions[0], dict):
-                    checksum_old = conflicting_transactions[0].get("checksum", "N/A")
+            if conflicting_checksums and isinstance(conflicting_checksums, list):
+                checksum_old = conflicting_checksums[0] if conflicting_checksums[0] else "N/A"
 
             # Determine the type of conflict based on Mosaic's reason
             mosaic_reason = mosaic_result.get("reason", "unknown_error")
@@ -146,26 +150,25 @@ async def process_transaction_endpoint(request: Request):
                 "transaction_date": transaction_dict.get("transaction_date", "N/A"), # Transaction date of the new transaction
                 "type_of_conflict": type_of_conflict, # The specific type of duplicate
                 "mosaic_reason": mosaic_reason, # Original reason from Mosaic for debugging/analysis
-                "conflicting_transactions_details": conflicting_transactions, # Full details of conflicting transactions
                 "date": time.strftime("%Y-%m-%d")
             }
             
             logger.info(
-                f"Sending duplicate conflict to Pub/Sub: {pubsub_data}"
+                f"Sending conflict to Pub/Sub: {pubsub_data}"
             )
             publish_response(pubsub_data, "analyze-transactions")
 
-            # Return duplicate detected status
+            # Return conflict detected status
             return {
-                "status": "duplicate_detected",
+                "status": "conflict_detected",
                 "details": mosaic_result,
                 "pubsub_sent": True
             }
             
-        elif mosaic_result.get("error"):
+        elif mosaic_result.get("status") == "error":
             logger.warning(f"Mosaic error: {mosaic_result.get('error')}")
             # Determine error type for Pub/Sub if needed, or just log
-            error_type = CONFLICT_TYPE_MAP.get(mosaic_result.get("reason", "processing_error"), "ERROR")
+            error_type = CONFLICT_TYPE_MAP.get(mosaic_result.get("reason", "exception"), "ERROR")
             
             # Optionally, send error details to Pub/Sub as well
             pubsub_data_error = {
@@ -176,7 +179,7 @@ async def process_transaction_endpoint(request: Request):
                 "date": transaction_dict.get("transaction_date", "N/A"),
                 "type_of_conflict": error_type,
                 "error_message": mosaic_result.get("error"),
-                "mosaic_reason": mosaic_result.get("reason", "processing_error")
+                "mosaic_reason": mosaic_result.get("reason", "exception")
             }
             #publish_response(pubsub_data_error, "duplicate-transactions-errors") # Consider a separate topic for errors
             
