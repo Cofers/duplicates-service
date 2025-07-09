@@ -18,8 +18,8 @@ steps:
   - --allow-unauthenticated
   - --cpu=2
   - --memory=2Gi
-  - --concurrency=10
-  - --max-instances=1
+  - --concurrency=40
+  - --max-instances=4
   - --image=${_REGISTRY_PATH}/${_IMAGE_NAME}
   - --region=${_REGION}
   - --set-env-vars=GCP_PROJECT=${_GCP_PROJECT},REDIS_DB=${_REDIS_DB},REDIS_HOST=${_REDIS_HOST},REDIS_PORT=${_REDIS_PORT},BIGQUERY_DATASET=${_BIGQUERY_DATASET},BIGQUERY_TABLE=${_BIGQUERY_TABLE}
